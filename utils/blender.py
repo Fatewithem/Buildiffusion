@@ -127,11 +127,11 @@ def import_and_process_obj(file_path, output_base_path, target_scale=40.0, rende
     # ]
 
     camera_positions = [
-        ("_1", (100, 0, 0), (math.radians(90), math.radians(0), math.radians(90))),
-        ("_2", (-100, 0, 0), (math.radians(270), math.radians(180), math.radians(90))),
-        ("_3", (0, 100, 0), (math.radians(90), math.radians(0), math.radians(180))),
-        ("_4", (0, -100, 0), (math.radians(270), math.radians(180), math.radians(180))),
-        ("_0", (0, 0, 150), (0, 0, 0,))
+        ("_1", (100, 0, 25), (math.radians(75), math.radians(0), math.radians(90))),
+        ("_2", (-100, 0, 25), (math.radians(255), math.radians(180), math.radians(90))),
+        ("_3", (0, 100, 25), (math.radians(75), math.radians(0), math.radians(180))),
+        ("_4", (0, -100, 25), (math.radians(255), math.radians(180), math.radians(180))),
+        ("_0", (0, 0, 150), (0, 0, 0))
     ]
 
     # Add camera settings for clip_start and clip_end

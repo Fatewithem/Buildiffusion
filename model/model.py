@@ -69,9 +69,10 @@ class ConditionalPointCloudDiffusionModel(PointCloudProjectionModel):
             # image_rgb: Optional[Tensor],
             return_intermediate_steps: bool = False
     ):
+
         # Normalize colors and convert to tensor
         x_0 = self.point_cloud_to_tensor(pc, normalize=True, scale=True)  # (-1, 1)
-        # render_point_cloud(x_0, "origin")
+
         B, N, D = x_0.shape  # Batch; Num; Dimen
 
         # Sample random noise
@@ -84,6 +85,10 @@ class ConditionalPointCloudDiffusionModel(PointCloudProjectionModel):
         # Add noise to points
         x_t = self.scheduler.add_noise(x_0, noise, timestep)
 
+        # render_point_cloud(x_0, "x_0")
+        #
+        # render_point_cloud(x_t, "x_t")
+
         # Conditioning
         # x_t_input = self.get_input_with_conditioning(x_t, camera=camera,
         #                                              image_rgb=image_rgb, mask=mask, t=timestep)
@@ -92,12 +97,27 @@ class ConditionalPointCloudDiffusionModel(PointCloudProjectionModel):
         # x_t_input = x_t
 
         # Bae Conditioning
-        x_t_input = self.get_input_with_bae(x_t, camera=camera, mask=masks, t=timestep)
+        x_t_input = self.get_input_with_bae(x_t, camera=camera, mask=masks, t=timestep)  # B N 3+2
 
+        # indices = [0, 2, 5, 45, 78, 345, 7789]  # 想要查看的索引
+        # for idx in indices:
+        #     print(f"\nSlice at index {idx}:")
+        #     print(x_t_input[:, idx:idx + 1, :])
 
+        # render_point_cloud(x_t_input, "x_t_input")
+
+        # print(x_t_input.shape)
+
+        # print(f"Min value: {x_0.min().item()}")
+        # print(f"Max value: {x_0.max().item()}")
+        # print(f"Mean value: {x_0.mean().item()}")
 
         # Forward
         noise_pred = self.point_cloud_model(x_t_input, timestep)
+
+        # render_point_cloud(noise_pred, "noise_pred")
+        #
+        # render_point_cloud(noise, "noise")
 
         # 打印数值范围：最小值、最大值和平均值
         # print(f"Min value: {noise_pred.min().item()}")
@@ -108,36 +128,8 @@ class ConditionalPointCloudDiffusionModel(PointCloudProjectionModel):
         if not noise_pred.shape == noise.shape:
             raise ValueError(f'{noise_pred.shape=} and {noise.shape=}')
 
-        # def reconstruct_x0(x_t, noise_pred, t, scheduler):
-        #     """
-        #     使用模型预测的噪声来计算去噪后的数据 x_reconstructed。
-        #     """
-        #     # 获取设备
-        #     device = x_t.device
-        #
-        #     # 将 timestep, alpha_t, beta_t 移动到同一设备
-        #     alpha_t = scheduler.alphas_cumprod[t].to(device).view(-1, 1, 1)  # 累积 alpha
-        #     beta_t = scheduler.betas[t].to(device).view(-1, 1, 1)  # 当前步的 beta
-        #
-        #     # 反向公式计算去噪后的 x_{t-1}
-        #     x_reconstructed = (1 / torch.sqrt(alpha_t)) * (
-        #             x_t - beta_t / torch.sqrt(1 - alpha_t) * noise_pred
-        #     )
-        #
-        #     return x_reconstructed
-
-        # 计算去噪后的数据 x_reconstructed
-        # x_reconstructed = reconstruct_x0(x_t, noise_pred, timestep, self.scheduler)
-        # render_point_cloud(x_reconstructed, "reconstructed")
-
         # DDPM Loss
         loss_ddpm = F.mse_loss(noise_pred, noise)
-
-        # BAE Loss
-        # from .mask_loss import get_mask_loss  # 在这里导入 get_mask_loss，避免循环依赖
-        # loss_bae = get_mask_loss(x_reconstructed, masks, B)
-        #
-        # loss = 0.5 * loss_ddpm + 0.5 * loss_bae
 
         loss = loss_ddpm
 
@@ -216,7 +208,7 @@ class ConditionalPointCloudDiffusionModel(PointCloudProjectionModel):
             # Step
             x_t = scheduler.step(noise_pred, t, x_t, **extra_step_kwargs).prev_sample
 
-            render_point_cloud(x_t, "pred")
+            # render_point_cloud(x_t, "pred")
 
             # Append to output list if desired
             if (return_all_outputs and (i % return_sample_every_n_steps == 0 or i == len(scheduler.timesteps) - 1)):
@@ -247,7 +239,7 @@ class ConditionalPointCloudDiffusionModel(PointCloudProjectionModel):
         elif mode == 'sample':
             num_points = kwargs.pop('num_points', get_num_points(batch['pointclouds']))
             return self.forward_sample(
-                num_points=100000,
+                num_points=150000,
                 masks=batch['masks_list'],
                 camera=batch['camera_list'],
                 # image_rgb=batch.image_rgb,

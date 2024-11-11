@@ -47,7 +47,7 @@ class RunConfig:
 
 @dataclass
 class LoggingConfig:
-    wandb: bool = True
+    wandb: bool = False
     wandb_project: str = 'bd'
 
 
@@ -78,8 +78,8 @@ class PointCloudProjectModelConfig:
 @dataclass
 class PointCloudDiffusionModelConfig(PointCloudProjectModelConfig):
     # Diffusion arguments
-    beta_start: float = 0.00085  # 0.00085
-    beta_end: float = 0.012  # 0.012
+    beta_start: float = 1e-5  # 0.00085
+    beta_end: float = 8e-3  # 0.012
     beta_schedule: str = 'linear'  # 'custom' 'linear'
 
     # Point cloud model arguments

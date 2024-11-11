@@ -143,6 +143,8 @@ def render_point_cloud(point_cloud: Tensor, idx: str):
         R = euler_angles_to_matrix(rotation, "XYZ").float()  # 转换为 float32
         T = -torch.matmul(R, location.unsqueeze(2)).squeeze(-1)
 
+        T = T / 20.0
+
         # 使用 FoVPerspectiveCameras 定义相机，确保相机的参数是 float32
         cameras = FoVPerspectiveCameras(device=device, R=R, T=T, fov=fov).float()
 

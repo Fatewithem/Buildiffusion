@@ -77,7 +77,7 @@ class BuildingsDataset(Dataset):
         T = -torch.matmul(R, location_tensor.unsqueeze(2)).squeeze(-1)
 
         # 缩放平移向量 T
-        T = T * self.scale_factor
+        # T = T * self.scale_factor
 
         # 创建相机对象
         cameras = FoVPerspectiveCameras(R=R, T=T, fov=self.fov).float()
@@ -98,10 +98,10 @@ class BuildingsDataset(Dataset):
 
         transform = transforms.ToTensor()
         # masks_tensor = torch.zeros((5, 1, 1080, 1920))
-        masks_tensor = torch.zeros((5, 1, 1080, 1920))
+        masks_tensor = torch.zeros((1, 1, 1080, 1920))
 
         # 遍历 mask 文件并处理
-        for i in range(5):
+        for i in range(1):
             mask_name = f"_{i}.png"
             mask_path = os.path.join(masks_path, mask_name)
 
@@ -117,7 +117,7 @@ class BuildingsDataset(Dataset):
             # 将 mask 插入到 batch 维度中
             masks_tensor[i] = mask_tensor
 
-            # # 保存可视化结果到文件
+            # 保存可视化结果到文件
             # save_path = os.path.join("/home/code/Blender/test_output", f"mask_{i}.png")
             # fig = plt.figure(figsize=(10, 5))  # 创建一个图像对象
             # plt.imshow(mask_tensor.squeeze(0).cpu().numpy(), cmap='gray')  # 绘制灰度图
@@ -151,10 +151,10 @@ class BuildingsDataset(Dataset):
 
         camera_params = [
             {"name": "_0", "location": [0, 150, 0], "rotation": [90.0, 0.0, 180.0]},
-            {"name": "_1", "location": [-100, 0, 0], "rotation": [90.0, -76.0, 90.0]},
-            {"name": "_2", "location": [100, 0, 0], "rotation": [90.0, 76.0, -90.0]},
-            {"name": "_3", "location": [0, -23, -100], "rotation": [14.0, 0.0, 0.0]},
-            {"name": "_4", "location": [0, 23, 100], "rotation": [166.0, 0.0, 180.0]},
+            # {"name": "_1", "location": [-100, 0, 0], "rotation": [90.0, -76.0, 90.0]},
+            # {"name": "_2", "location": [100, 0, 0], "rotation": [90.0, 76.0, -90.0]},
+            # {"name": "_3", "location": [0, -23, -100], "rotation": [14.0, 0.0, 0.0]},
+            # {"name": "_4", "location": [0, 23, 100], "rotation": [166.0, 0.0, 180.0]},
         ]
 
         # 为每个相机参数创建相机对象
@@ -188,7 +188,7 @@ def custom_collate_fn(batch):
 
 def get_dataset(cfg: ProjectConfig):
     if cfg.dataset.type == 'buildings':
-        dataset_cfg: BuildingsConfig = cfg.dataset
+        dataset_cfg: BuildiTngsConfig = cfg.dataset
         dataloader_cfg: DataloaderConfig = cfg.dataloader
 
         datasets = {

@@ -1,18 +1,22 @@
 import bpy
 import os
-import mathutils
 import math
-import csv
 import numpy as np
 import json
-
+from mathutils import Matrix
 
 def clear_scene():
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete()
 
+def get_RT_from_blender(cam: bpy.types.Object):
+    """Returns the R and T matrices from the given camera."""
+    location, rotation = cam.matrix_world.decompose()[0:2]
+    R_world2bcam = rotation.to_matrix().transposed()  # 旋转矩阵 R
+    T_world2bcam = -1 * R_world2bcam @ location  # 平移向量 T
+    return R_world2bcam, T_world2bcam
 
-def import_and_process_obj(file_path, output_base_path, target_scale=40.0, render_settings=None, focal_length=50.0):
+def import_and_process_obj(file_path, output_base_path, target_scale=40.0, render_settings=None, focal_length=50.0, sensor_width=32.0):
     clear_scene()
 
     dic_name = 'blender'
@@ -21,7 +25,6 @@ def import_and_process_obj(file_path, output_base_path, target_scale=40.0, rende
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
-    # Import OBJ file
     if os.path.isfile(file_path):
         try:
             bpy.ops.wm.obj_import(filepath=file_path)
@@ -33,22 +36,13 @@ def import_and_process_obj(file_path, output_base_path, target_scale=40.0, rende
         print(f"Specified OBJ file does not exist: {file_path}")
         return
 
-    imported_objects = [obj for obj in bpy.context.selected_objects if obj.type == 'MESH']
-
-    for obj in bpy.context.scene.objects:
-        if obj.type == 'MESH':
-            obj.pass_index = 1  # 将对象ID设置为1
-
     camera_positions = [
-        ("_1", (100, 0, 0), (math.radians(90), math.radians(0), math.radians(90))),
-        ("_2", (-100, 0, 0), (math.radians(270), math.radians(180), math.radians(90))),
-        ("_3", (0, 100, 0), (math.radians(90), math.radians(0), math.radians(180))),
-        ("_4", (0, -100, 0), (math.radians(270), math.radians(180), math.radians(180))),
+        ("_1", (100, 0, 25), (math.radians(75), math.radians(0), math.radians(90))),
+        ("_2", (-100, 0, 25), (math.radians(255), math.radians(180), math.radians(90))),
+        ("_3", (0, 100, 25), (math.radians(75), math.radians(0), math.radians(180))),
+        ("_4", (0, -100, 25), (math.radians(255), math.radians(180), math.radians(180))),
         ("_0", (0, 0, 150), (0, 0, 0))
     ]
-
-    clip_start = 0.1
-    clip_end = 1000.0
 
     if render_settings is not None:
         bpy.context.scene.render.engine = render_settings.get('engine', 'CYCLES')
@@ -74,6 +68,8 @@ def import_and_process_obj(file_path, output_base_path, target_scale=40.0, rende
         bg = bpy.context.scene.world.node_tree.nodes['Background']
         bg.inputs['Color'].default_value = (1, 1, 1, 1)
 
+    camera_intrinsics = {}
+
     for name, location, rotation in camera_positions:
         clear_existing_cameras()
 
@@ -82,12 +78,11 @@ def import_and_process_obj(file_path, output_base_path, target_scale=40.0, rende
         camera.name = name
         bpy.context.scene.camera = camera
 
-        # Set focal length instead of FOV
+        # Set focal length and sensor width
         camera.data.lens = focal_length
-
-        # Set Clip Start and Clip End for the camera
-        camera.data.clip_start = clip_start
-        camera.data.clip_end = clip_end
+        camera.data.sensor_width = sensor_width
+        camera.data.clip_start = 0.1
+        camera.data.clip_end = 1000.0
 
         output_file_path = os.path.join(output_path, f"{obj_name}{name}.png")
         bpy.context.scene.render.filepath = output_file_path
@@ -96,14 +91,33 @@ def import_and_process_obj(file_path, output_base_path, target_scale=40.0, rende
         bpy.context.scene.render.image_settings.file_format = 'PNG'
         bpy.ops.render.render(write_still=True)
 
-    print(f"Processing and rendering completed for {file_path}")
+        # Save camera intrinsics
+        focal_length_px = (focal_length / sensor_width) * bpy.context.scene.render.resolution_x
+        intrinsics = {
+            "focal_length_px": focal_length_px,
+            "sensor_width": sensor_width,
+            "resolution_x": bpy.context.scene.render.resolution_x,
+            "resolution_y": bpy.context.scene.render.resolution_y
+        }
 
+        # Get and save the R and T matrices
+        R, T = get_RT_from_blender(camera)
+        intrinsics["R"] = [list(row) for row in R]  # 转为列表形式以便存储
+        intrinsics["T"] = list(T)
+
+        camera_intrinsics[name] = intrinsics
+
+    # Save camera intrinsics and extrinsics to a JSON file
+    intrinsics_file_path = os.path.join(output_path, f"{obj_name}_camera_intrinsics.json")
+    with open(intrinsics_file_path, 'w') as json_file:
+        json.dump(camera_intrinsics, json_file, indent=4)
+
+    print(f"Processing and rendering completed for {file_path}")
 
 def clear_existing_cameras():
     for obj in bpy.data.objects:
         if obj.type == 'CAMERA':
             bpy.data.objects.remove(obj, do_unlink=True)
-
 
 if __name__ == "__main__":
     render_settings = {
@@ -119,4 +133,4 @@ if __name__ == "__main__":
 
     file_path = '/Users/wuchengyu/Downloads/Code/Buildiffusion/data/processed_object_0.obj'
     output_path = '/Users/wuchengyu/Downloads/Code/Buildiffusion/data/'
-    import_and_process_obj(file_path, output_path, render_settings=render_settings, focal_length=35.0)
+    import_and_process_obj(file_path, output_path, render_settings=render_settings, focal_length=35.0, sensor_width=32.0)
