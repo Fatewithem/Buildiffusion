@@ -15,7 +15,7 @@ from pytorch3d.renderer import (
     AlphaCompositor,
 )
 from pytorch3d.structures import Pointclouds
-from pytorch3d.renderer.cameras import FoVPerspectiveCameras
+from pytorch3d.renderer.cameras import PerspectiveCameras
 from pytorch3d.transforms import euler_angles_to_matrix
 
 
@@ -38,7 +38,7 @@ def compute_distance_transform(mask: torch.Tensor):
     # print(f"After squeeze, mask shape: {mask.shape}")
 
     # 检查是否为 (B, 1080, 1920)
-    assert mask.shape[-2:] == (1080, 1920), f"Unexpected mask shape: {mask.shape[-2:]}"
+    # assert mask.shape[-2:] == (1080, 1920), f"Unexpected mask shape: {mask.shape[-2:]}"
 
     # 遍历每个批次的掩膜并计算距离变换
     batch_size = mask.shape[0]
@@ -69,7 +69,7 @@ def get_num_points(x: Pointclouds, /):
     return x.points_padded().shape[1]
 
 
-def tensor_to_point_cloud(x: Tensor, predict_color: bool = False, denormalize: bool = False, unscale: bool = False):
+def tensor_to_point_cloud(x: Tensor, predict_color: bool = True, denormalize: bool = False, unscale: bool = False):
     points = x[:, :, :3]
     if predict_color:
         colors = denormalize(x[:, :, 3:]) if denormalize else x[:, :, 3:]
@@ -97,37 +97,33 @@ def render_point_cloud(point_cloud: Tensor, idx: str):
 
     pointclouds = tensor_to_point_cloud(point_cloud)
 
-    if pointclouds.features_padded() is None:
-        # 添加全白的 RGB 特征
-        features = torch.ones_like(pointclouds.points_padded(), device=device)  # 形状为 [B, N, 3]
-        pointclouds = Pointclouds(points=pointclouds.points_padded(), features=features)
+    # if pointclouds.features_padded() is None:
+    #     # 添加全白的 RGB 特征
+    #     features = torch.ones_like(pointclouds.points_padded(), device=device)  # 形状为 [B, N, 3]
+    #     pointclouds = Pointclouds(points=pointclouds.points_padded(), features=features)
+
+    features = torch.ones_like(pointclouds.points_padded(), device=device)  # 形状为 [B, N, 3]
+    pointclouds = Pointclouds(points=pointclouds.points_padded(), features=features)
 
     camera_params = [
-        # {"name": "_1", "location": [-100, 0, 0], "rotation": [90.0, -76.0, 90.0]},  # 相机 1
-        # {"name": "_2", "location": [100, 0, 0], "rotation": [90.0, 76.0, -90.0]},  # 相机 2
-        # {"name": "_3", "location": [0, -23, -100], "rotation": [14.0, 0.0, 0.0]},  # 相机 3
-        # {"name": "_4", "location": [0, 23, 100], "rotation": [166.0, 0.0, 180.0]},  # 相机 4
-        {"name": "_0", "location": [0, 150, 0], "rotation": [90.0, 0.0, 180.0]}  # 相机 0
+        {"name": "_4", "location": [-7.8681e-07,  2.9535e+00,  4.5796e+01], "rotation": [165.0, 0.0, 180.0]},
     ]
 
     # 渲染参数
-    fov = 23.14
+    focal_length = 3.85  # 替换成你自己的焦距
     image_size = (1080, 1920)
 
-    # 渲染设置
+    # 配置渲染器
     raster_settings = PointsRasterizationSettings(
         image_size=image_size,
         radius=0.005,
         points_per_pixel=10,
-        bin_size=0
+        bin_size=0  # 设置为0以自动选择最佳大小
     )
-
-    # 渲染器初始化
     renderer = PointsRenderer(
         rasterizer=PointsRasterizer(
-            cameras=None,  # 稍后动态指定摄像机
-            raster_settings=raster_settings
-        ),
+            cameras=None,  # 我们将在循环中动态设置 cameras
+            raster_settings=raster_settings),
         compositor=AlphaCompositor()
     )
 
@@ -141,12 +137,16 @@ def render_point_cloud(point_cloud: Tensor, idx: str):
         rotation = torch.tensor(cam["rotation"], dtype=torch.float32, device=device).unsqueeze(0)
         rotation = rotation * (torch.pi / 180.0)
         R = euler_angles_to_matrix(rotation, "XYZ").float()  # 转换为 float32
-        T = -torch.matmul(R, location.unsqueeze(2)).squeeze(-1)
 
-        T = T / 20.0
+        T = location / 10.0
 
-        # 使用 FoVPerspectiveCameras 定义相机，确保相机的参数是 float32
-        cameras = FoVPerspectiveCameras(device=device, R=R, T=T, fov=fov).float()
+        cameras = PerspectiveCameras(
+            focal_length=((focal_length, focal_length),),
+            principal_point=((0.0, 0.0),),
+            image_size=(image_size,),
+            in_ndc=True,
+            R=R, T=T, device=device
+        )
 
         with autocast(enabled=False):
             # 渲染点云图像，确保 pointcloud 和 cameras 是 float32 类型
@@ -154,8 +154,14 @@ def render_point_cloud(point_cloud: Tensor, idx: str):
             rendered_image = torch.clamp(rendered_image, 0, 1)  # 将像素值限制在 0 到 1 之间
 
         # 保存生成的图像
-        if cam['name'] == '_0':
+        if cam['name'] == '_4':
             image_path = os.path.join(output_dir, f"{idx}.png")
+            # 确保图像的形状正确
+            if rendered_image[0, ..., :3].ndimension() != 3 or rendered_image[0, ..., :3].shape[-1] != 3:
+                print(f"Rendered image shape: {rendered_image[0, ..., :3].shape}")
+                raise ValueError("Rendered image must have shape [height, width, 3] for RGB format.")
+
+            # 保存图像
             plt.imsave(image_path, rendered_image[0, ..., :3].detach().cpu().numpy())  # 先 detach 再转为 numpy
 
 

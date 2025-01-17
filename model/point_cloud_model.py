@@ -13,10 +13,10 @@ from .simple.simple_model import SimplePointModel
 class PointCloudModel(ModelMixin, ConfigMixin):
     def __init__(
             self,
-            model_type: str = 'pvcnn',
+            model_type: str = 'pvcnnplusplus',
             in_channels: int = 3,
             out_channels: int = 3,
-            embed_dim: int = 64,
+            embed_dim: int = 512,  # 64
             dropout: float = 0.1,
             width_multiplier: int = 1,
             voxel_resolution_multiplier: int = 1,
@@ -34,7 +34,7 @@ class PointCloudModel(ModelMixin, ConfigMixin):
             )
         elif self.model_type == 'pvcnnplusplus':
             self.autocast_context = torch.autocast('cuda', dtype=torch.float32)
-            elf.model = PVCNN2PlusPlus(
+            self.model = PVCNN2PlusPlus(
                 embed_dim=embed_dim,
                 num_classes=out_channels,
                 extra_feature_channels=(in_channels - 3),

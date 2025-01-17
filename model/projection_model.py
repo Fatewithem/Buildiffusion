@@ -11,24 +11,29 @@ from pytorch3d.renderer import PointsRasterizationSettings, PointsRasterizer
 from pytorch3d.renderer.cameras import CamerasBase
 from pytorch3d.structures import Pointclouds
 from torch import Tensor
+import matplotlib.pyplot as plt
+import torch.nn as nn
 
 from torchvision.transforms import ToPILImage
 import matplotlib.pyplot as plt
 from PIL import Image
+import seaborn as sns
 
 from .feature_model import FeatureModel
-from .model_utils import compute_distance_transform
+from .model_utils import compute_distance_transform, render_point_cloud
+from cost_volume.cost_volume import build_cost_volume, MVSFormerWithDino, DinoFeatureExtractor
+from sklearn.decomposition import PCA
 
 SchedulerClass = Union[DDPMScheduler, DDIMScheduler, PNDMScheduler, LMSDiscreteScheduler]
 
 from pytorch3d.renderer import (
-    FoVPerspectiveCameras,
     PointsRasterizationSettings,
     PointsRenderer,
     PointsRasterizer,
     AlphaCompositor,
 )
 from pytorch3d.structures import Pointclouds
+
 
 class PointCloudProjectionModel(ModelMixin):
     def __init__(
@@ -38,21 +43,22 @@ class PointCloudProjectionModel(ModelMixin):
             use_top: bool,
             use_depth: bool,
             image_feature_model: str,
-            use_local_colors: bool = False,
-            use_local_features: bool = False,
-            use_global_features: bool = False,
-            use_mask: bool = False,
+            use_local_colors: bool = True,
+            use_local_features: bool = True,
+            use_global_features: bool = True,
+            use_mask: bool = True,
             use_distance_transform: bool = False,
             predict_shape: bool = True,
-            predict_color: bool = False,
+            predict_normal: bool = False,
+            predict_color: bool = True,
             process_color: bool = False,
             image_color_channels: int = 3,  # for the input image, not the points
             color_channels: int = 3,  # for the points, not the input image
             colors_mean: float = 0.5,
             colors_std: float = 0.5,
-            scale_factor: float = 20.0,
+            scale_factor: float = 10.0,
             # Rasterization settings
-            raster_point_radius: float = 0.005,  # point size
+            raster_point_radius: float = 0.008,  # point size
             raster_points_per_pixel: int = 10,  # a single point per pixel, for now
             bin_size: int = 0,
     ):
@@ -68,6 +74,7 @@ class PointCloudProjectionModel(ModelMixin):
         self.use_mask = use_mask
         self.use_distance_transform = use_distance_transform
         self.predict_shape = predict_shape
+        self.predict_normal = predict_normal
         self.predict_color = predict_color
         self.process_color = process_color
         self.image_color_channels = image_color_channels
@@ -80,11 +87,22 @@ class PointCloudProjectionModel(ModelMixin):
         self.use_global_conditioning = self.use_global_features
 
         # Create feature model
-        # self.feature_model = FeatureModel(image_height, image_width, image_feature_model)
+        self.dino_extractor = DinoFeatureExtractor(model_path="/home/code/Buildiffusion/cost_volume/dinov2_base")
+
+        # 加载配置和初始化模型
+        config_path = "/home/code/Dino/config/config.json"
+        config = load_config(config_path)
+        transformer_config = config['transformer_config']
+        model_path = "/home/code/Buildiffusion/cost_volume/dinov2_base"
+
+        self.mvs_cost_volume_model = MVSFormerWithDino(
+            dino_model_path=model_path,
+            transformer_config=transformer_config,
+        )
 
         # Input size
         # self.in_channels = 3  # 3 for 3D point positions
-        self.in_channels = 5  # use_distance_transform and mask
+        self.in_channels = 779  # 779
 
         # if self.use_local_colors:
         #     self.in_channels += self.image_color_channels
@@ -101,12 +119,14 @@ class PointCloudProjectionModel(ModelMixin):
         self.out_channels = 0
         if self.predict_shape:
             self.out_channels += 3
+        if self.predict_normal:
+            self.out_channels += 3
         if self.predict_color:
             self.out_channels += self.color_channels
 
         # Save rasterization settings
         self.raster_settings = PointsRasterizationSettings(
-            image_size=(1080, 1920),
+            image_size=(546, 966),
             radius=raster_point_radius,
             points_per_pixel=raster_points_per_pixel,
             bin_size=bin_size,
@@ -123,17 +143,22 @@ class PointCloudProjectionModel(ModelMixin):
     def get_global_conditioning(self, image_rgb: Tensor):
         global_conditioning = []
         if self.use_global_features:
-            global_conditioning.append(self.feature_model(image_rgb,
-                                                          return_cls_token_only=True))  # (B, D)
+            cls_token_feature = self.dino_extractor(image_rgb, return_type="cls_token")  # (B, D)
+            print(f"cls: {cls_token_feature.shape}")
+            global_conditioning.append(cls_token_feature)
+
         global_conditioning = torch.cat(global_conditioning, dim=1)  # (B, D_cond)
         return global_conditioning
 
     def get_local_conditioning(self, image_rgb: Tensor, mask: Tensor):
         local_conditioning = []
         if self.use_local_colors:
+            # print(f"self.normalize(image_rgb): {self.normalize(image_rgb).shape}")
             local_conditioning.append(self.normalize(image_rgb))
         if self.use_local_features:
-            local_conditioning.append(self.feature_model(image_rgb))
+            local_features = self.dino_extractor(image_rgb, return_type="features")  # (B, D, H_tokens, W_tokens)
+            # print(f"local_features: {local_features.shape}")
+            local_conditioning.append(local_features)
         if self.use_mask:
             local_conditioning.append(mask.float())
         if self.use_distance_transform:
@@ -167,32 +192,6 @@ class PointCloudProjectionModel(ModelMixin):
 
         visible_pixels = (fragments_idx > -1)  # (B, H, W, R)
 
-        # def save_visible_pixels_visualization(visible_pixels, save_path):
-        #     # 将 visible_pixels 转换为 numpy 数组
-        #     visible_pixels_np = visible_pixels.cpu().numpy()  # 如果在 GPU 上，将其移动到 CPU
-        #
-        #     # 假设 visible_pixels 形状为 (B, H, W, R)，提取第一个 batch 和第一个深度层的像素数据
-        #     visible_pixels_2d = visible_pixels_np[0, :, :, 0]  # 转换为 (H, W) 的二维数组
-        #
-        #     # 创建保存路径的文件夹（如果不存在）
-        #     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        #
-        #     # 绘制图像
-        #     plt.imshow(visible_pixels_2d, cmap='gray')
-        #     plt.title('Visible Pixels')
-        #     plt.colorbar(label='Visibility')
-        #     plt.xlabel('Width')
-        #     plt.ylabel('Height')
-        #
-        #     # 保存图像到指定路径
-        #     plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
-        #     plt.close()  # 关闭图像以释放内存
-        #
-        #     print(f"Visible pixels visualization saved to: {save_path}")
-        #
-        # save_path = "/home/code/Blender/output/visible_pixels_visualization.png"
-        # save_visible_pixels_visualization(visible_pixels, save_path)
-
         points_to_visible_pixels = fragments_idx[visible_pixels]
 
         # 确保 local_features 维度顺序一致
@@ -222,11 +221,21 @@ class PointCloudProjectionModel(ModelMixin):
         if self.predict_color and pc.features_padded() is not None:
             colors = self.normalize(pc.features_padded()) if normalize else pc.features_padded()
             return torch.cat((points, colors), dim=2)
+
+        if self.predict_normal and pc.normals_padded() is not None:
+            normals = pc.normals_padded()
+
+            # 检查 normals 是否归一化
+            norm_lengths = normals.norm(dim=-1)  # 计算每个法向量的 L2 范数
+            normals = normals / (norm_lengths.unsqueeze(-1) + 1e-8)  # 避免除以零
+
+            return torch.cat((points, normals), dim=2)
         else:
             return points
 
     def tensor_to_point_cloud(self, x: Tensor, /, denormalize: bool = False, unscale: bool = False):
         points = x[:, :, :3] * (self.scale_factor if unscale else 1)
+
         if self.predict_color:
             colors = self.denormalize(x[:, :, 3:]) if denormalize else x[:, :, 3:]
             return Pointclouds(points=points, features=colors)
@@ -238,7 +247,7 @@ class PointCloudProjectionModel(ModelMixin):
             self,
             x_t: Tensor,
             camera: Optional[CamerasBase],
-            image_rgb: Optional[Tensor],
+            images: Optional[Tensor],
             mask: Optional[Tensor],
             t: Optional[Tensor],
     ):
@@ -250,6 +259,49 @@ class PointCloudProjectionModel(ModelMixin):
         # Initial input is the point locations (and colors if and only if predicting color)
         x_t_input = [x_t]
 
+        image_tensor = torch.stack(images, dim=0)
+        mask_tensor = torch.stack(mask, dim=0)
+
+        image_rgb = image_tensor[:, 1:2, :, :].squeeze(1)
+        mask = mask_tensor[:, 1:2, :, :].squeeze(1)
+        camera = camera[1]
+
+        # def visualize_and_save_images(image_rgb, mask, save_dir):
+        #     """
+        #     可视化并保存图像和对应的 mask。
+        #     :param image_rgb: 输入的 RGB 图像张量，形状为 [B, H, W]。
+        #     :param mask: 输入的 Mask 张量，形状为 [B, H, W]。
+        #     :param save_dir: 保存图像的目录路径。
+        #     """
+        #     # 确保保存目录存在
+        #     os.makedirs(save_dir, exist_ok=True)
+        #
+        #     # 将图像和 mask 保存
+        #     to_pil = ToPILImage()
+        #     for i in range(image_rgb.shape[0]):
+        #         # 获取单张图像和 mask
+        #         img = to_pil(image_rgb[i])
+        #         mask_img = to_pil(mask[i])
+        #
+        #         # 创建一个新图形
+        #         fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        #         axes[0].imshow(img)
+        #         axes[0].set_title("Image")
+        #         axes[0].axis("off")
+        #
+        #         axes[1].imshow(mask_img, cmap="gray")
+        #         axes[1].set_title("Mask")
+        #         axes[1].axis("off")
+        #
+        #         # 保存可视化图像
+        #         save_path = os.path.join(save_dir, f"image_mask_{i}.png")
+        #         plt.savefig(save_path, bbox_inches="tight")
+        #         plt.close(fig)
+        #
+        #         print(f"Saved visualization to {save_path}")
+
+        # visualize_and_save_images(image_rgb, mask, "/home/code/Buildiffusion")
+
         # Local conditioning
         if self.use_local_conditioning:
 
@@ -260,7 +312,7 @@ class PointCloudProjectionModel(ModelMixin):
 
             # Project local features. Here that we only need the point locations, not colors
             local_features_proj = self.surface_projection(points=x_t[:, :, :3],
-                                                          camera=s,
+                                                          camera=camera,
                                                           local_features=local_features)  # (B, N, D_local)
 
             x_t_input.append(local_features_proj)
@@ -271,6 +323,8 @@ class PointCloudProjectionModel(ModelMixin):
             global_features = self.get_global_conditioning(image_rgb=image_rgb)  # (B, D_global)
             global_features = global_features.unsqueeze(1).expand(-1, N, -1)  # (B, D_global, N)
 
+            print(f"global_features: {global_features.shape}")
+
             x_t_input.append(global_features)
 
         # Concatenate together all the pointwise features
@@ -278,186 +332,184 @@ class PointCloudProjectionModel(ModelMixin):
 
         return x_t_input
 
-    def get_input_with_bae(
+    def get_input_with_cost_volume(
             self,
             x_t: torch.Tensor,
             camera: Optional[CamerasBase],
+            image: Optional[torch.Tensor],
             mask: Optional[torch.Tensor],  # tuple B
             t: Optional[torch.Tensor],
+            device: torch.device,  # 添加 device 参数
     ):
         # 确定输入张量所在的设备
         device = x_t.device
         B, N = x_t.shape[:2]
 
-        # print(mask)
-        #
-        # print(f"mask shape: {mask[0].shape}")
+        # 堆叠成张量
+        image_tensor = torch.stack(image, dim=0)
+        mask_tensor = torch.stack(mask, dim=0)
 
-        # 初始化各个mask的张量 (B, 1, H, W)
-        mask_0_tensor = torch.zeros((B, 1, 1080, 1920), device=device)
+        model = self.mvs_cost_volume_model
 
-        # 将 mask 数据逐个添加到 mask_0_tensor
-        for i, m in enumerate(mask):
-            mask_0_tensor[i] = m[0].to(device)
+        outputs = build_cost_volume(B, image_tensor, mask_tensor, model, device=device)
+        prob = outputs['prob_volume']
 
-        # 创建输出文件夹
-        # output_folder = "/home/code/Buildiffusion/img_test"
-        # os.makedirs(output_folder, exist_ok=True)
-        #
-        # to_pil = ToPILImage()
+        # 打印张量的最大值和最小值
+        # print(f"Max value: {prob.max().item()}")
+        # print(f"Min value: {prob.min().item()}")
+        # print(f"Mean value: {prob.mean().item()}")
 
-        # 假设 B = 1，保存每个 batch 的 mask 和 cdt 图像
-        # for i in range(B):
-        #     # 提取并保存 mask 图像
-        #     mask_tensor = mask_0_tensor[i, 0].cpu()
-        #     mask_tensor = (mask_tensor * 255).to(torch.uint8)
-        #     mask_image = to_pil(mask_tensor)
-        #     mask_image.save(os.path.join(output_folder, f"mask_{i}.png"))
-        #
-        #     # 计算 cdt（距离变换），并保存 cdt 图像
-        #     cdt_tensor = compute_distance_transform(mask_0_tensor[i:i + 1]).squeeze(0).cpu()
-        #     cdt_tensor = (cdt_tensor * 255).to(torch.uint8)
-        #     cdt_image = to_pil(cdt_tensor)
-        #     cdt_image.save(os.path.join(output_folder, f"cdt_{i}.png"))
-
-        # 初始化输入列表
         x_t_input = [x_t.to(device)]
 
-        def print_tensor_stats(tensor, tensor_name="Tensor"):
-            max_value = tensor.max()
-            min_value = tensor.min()
-            mean_value = tensor.mean()
+        camera = camera[1]
+        cost_volume_proj = self.surface_projection(points=x_t[:, :, :3], camera=camera, local_features=prob).to(device)
+        # print(f"Max value: {cost_volume_proj.max().item()}")
+        # print(f"Min value: {cost_volume_proj.min().item()}")
+        # print(f"Mean value: {cost_volume_proj.mean().item()}")
 
-            print(f"{tensor_name} - Max: {max_value.item()}, Min: {min_value.item()}, Mean: {mean_value.item()}")
+        # # x.shape = [1, 50000, 32]
+        # x_2d = cost_volume_proj[0].cpu().numpy()  # [50000, 32], 先转到 numpy
+        # pca = PCA(n_components=2)
+        # points_2d = pca.fit_transform(x_2d)  # [50000, 2]
+        #
+        # plt.figure(figsize=(6, 6))
+        # plt.scatter(points_2d[:, 0], points_2d[:, 1], s=1)  # s=1: 点大小
+        # plt.title("PCA to 2D")
+        #
+        # # 将图片保存到本地，文件名可自定义
+        # plt.savefig("/home/code/Buildiffusion/pca_2d_scatter.png", dpi=300, bbox_inches="tight")
 
-        # 遍历相机和 mask_list
-        for c, m in zip(camera, [mask_0_tensor]):
-            camera = c
-            cdt = compute_distance_transform(m).to(device)
-
-            # 计算并投影 cdt 和 mask
-            bae_cdt_proj = self.surface_projection(points=x_t[:, :, :3], camera=camera, local_features=cdt).to(device)
-            mask_proj = self.surface_projection(points=x_t[:, :, :3], camera=camera, local_features=m).to(device)
-
-            # 使用示例
-            # print_tensor_stats(bae_cdt_proj, tensor_name="BAE CDT Projection")
-            # print_tensor_stats(mask_proj, tensor_name="Mask Projection")
-
-            # 将计算的特征添加到输入列表
-            x_t_input.append(bae_cdt_proj)
-            x_t_input.append(mask_proj)
-
-        # 拼接所有张量
+        x_t_input.append(cost_volume_proj)
         x_t_input = torch.cat(x_t_input, dim=2)
+
         return x_t_input
 
-    # def get_input_with_bae(
-    #         self,
-    #         x_t: Tensor,
-    #         camera: Optional[CamerasBase],
-    #         mask: Optional[Tensor],  # turple B
-    #         t: Optional[Tensor],
-    # ):
-    #     # 确定输入张量所在的设备
-    #     device = x_t.device
-    #
-    #     B, N = x_t.shape[:2]
-    #
-    #     # 初始化各个mask的张量 (B, 1, H, W)
-    #     mask_0_tensor = torch.zeros((B, 1, 1080, 1920), device=device)
-    #     # mask_1_tensor = torch.zeros((B, 1, 1080, 1920), device=device)
-    #     # mask_2_tensor = torch.zeros((B, 1, 1080, 1920), device=device)
-    #     # mask_3_tensor = torch.zeros((B, 1, 1080, 1920), device=device)
-    #     # mask_4_tensor = torch.zeros((B, 1, 1080, 1920), device=device)
-    #
-    #     # 将 mask 数据逐个添加到 mask_0_tensor 和 mask_1_tensor 中
-    #     for i, m in enumerate(mask):
-    #         mask_0_tensor[i] = m[0].to(device)
-    #         # mask_1_tensor[i] = m[1].to(device)
-    #         # mask_2_tensor[i] = m[2].to(device)
-    #         # mask_3_tensor[i] = m[3].to(device)
-    #         # mask_4_tensor[i] = m[4].to(device)
-    #
-    #     # 创建输出文件夹
-    #     output_folder = "/home/code/Buildiffusion/img_test"
-    #     os.makedirs(output_folder, exist_ok=True)
-    #
-    #     to_pil = ToPILImage()
-    #
-    #     # 假设 B = 1，保存第一个 batch 的 mask
-    #     B, _, H, W = mask_0_tensor.shape
-    #     for i in range(B):
-    #         # 提取单个 mask 的张量
-    #         mask_tensor = mask_0_tensor[i, 0].cpu()  # 形状变为 (H, W)，并移到 CPU
-    #
-    #         # 如果需要将值归一化到 [0, 255] 之间
-    #         mask_tensor = (mask_tensor * 255).to(torch.uint8)
-    #
-    #         # 转换为 PIL 图像
-    #         mask_image = to_pil(mask_tensor)
-    #
-    #         # 保存为 PNG 图像到指定文件夹
-    #         mask_image.save(os.path.join(output_folder, f"mask_{i}.png"))
-    #
-    #
-    #     # mask_list = [mask_0_tensor, mask_1_tensor, mask_2_tensor, mask_3_tensor, mask_4_tensor]
-    #
-    #     mask_list = [mask_0_tensor]
-    #
-    #     # 初始化输入列表，并确保 x_t 在同一设备上
-    #     x_t_input = [x_t.to(device)]
-    #
-    #     # 遍历相机和 mask_list，确保所有张量在同一设备上
-    #     for c, m in zip(camera, mask_list):  # B 1 H W
-    #         camera = c
-    #
-    #         # 计算 distance_transform
-    #         cdt = compute_distance_transform(m).to(device)
-    #
-    #         bae_cdt_proj = self.surface_projection(
-    #             points=x_t[:, :, :3],
-    #             camera=camera,
-    #             local_features=cdt
-    #         ).to(device)  # B, N, 1
-    #
-    #         mask_proj = self.surface_projection(
-    #             points=x_t[:, :, :3],
-    #             camera=camera,
-    #             local_features=m
-    #         ).to(device)  # B, N, 1
-    #
-    #         # 将计算的特征添加到输入列表
-    #         x_t_input.append(bae_cdt_proj)
-    #         x_t_input.append(mask_proj)
-    #
-    #     # 确保所有张量在同一设备上后拼接
-    #     x_t_input = torch.cat(x_t_input, dim=2)  # (B, N, D)
-    #
-    #     return x_t_input
+    def cost_volume(
+            self,
+            x_t: torch.Tensor,
+            camera: Optional[CamerasBase],
+            image: Optional[torch.Tensor],
+            model: MVSFormerWithDino,
+    ):
+        # 确定输入张量所在的设备
+        device = x_t.device
+        B, N = x_t.shape[:2]
+
+        # 堆叠成张量
+        image_tensor = torch.stack(image, dim=0)
+
+        outputs = build_cost_volume(B, image_tensor, device=device)
+
+        prob = outputs['prob_volume']
+
+        camera = camera[1]
+        cost_volume_proj = self.surface_projection(points=x_t[:, :, :3], camera=camera, local_features=prob).to(device)
+
+        return cost_volume_proj
+
+    def get_input_with_bae(
+            self,
+            x_t: torch.Tensor,
+            camera: Optional[CamerasBase],
+            # image: Optional[torch.Tensor],  # tuple B
+            mask: Optional[torch.Tensor],  # tuple B
+            t: Optional[torch.Tensor],
+    ):
+        device = x_t.device
+        B, N = x_t.shape[:2]
+
+        # 初始化 mask 张量
+        num_masks = 5  # 假设有 5 个 mask
+        mask_list = []
+        for i in range(num_masks):
+            mask_tensor = torch.zeros((B, 1, 546, 966), device=device)
+            for b, m in enumerate(mask):
+                mask_tensor[b] = m[i].to(device)
+            mask_list.append(mask_tensor)
+
+        # 特征投影
+        x_t_input = [x_t.to(device)]
+        x_t_feature = []
+        x_t_bae = []
+
+        for c, m in zip(camera, mask_list):
+            cdt = compute_distance_transform(m).to(device)
+
+            mask_proj = self.surface_projection(points=x_t[:, :, :3], camera=c, local_features=m).to(device)
+            cdt_proj = self.surface_projection(points=x_t[:, :, :3], camera=c, local_features=cdt).to(device)
+
+            x_t_feature.append(mask_proj)
+            x_t_bae.append(cdt_proj)
+
+        # 堆叠特征
+        mask_proj_features = torch.stack(x_t_feature, dim=2).squeeze(-1)  # (B, N, num_masks, feature_dim)
+        cdt_proj_features = torch.stack(x_t_bae, dim=2).squeeze(-1)  # (B, N, num_masks, feature_dim)
+
+        fused_features = self.mask_weight_fusion(mask_proj_features)  # (B, N, 2 * feature_dim)
+        fused_features = fused_features.unsqueeze(-1)
+
+        # 拼接最终输入
+        x_t_input.append(fused_features)
+        x_t_input.append(mask_proj_features[:, :, 0:1])
+        x_t_input.append(cdt_proj_features[:, :, 0:1])
+
+        x_t_input = torch.cat(x_t_input, dim=2)  # (B, N, feature_dim + 2 * feature_dim)
+
+        return x_t_input
 
     def forward(self, batch: FrameData, mode: str = 'train', **kwargs):
         """ The forward method may be defined differently for different models. """
         raise NotImplementedError()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# class MaskWeightFusion(nn.Module):
+#     def __init__(self, num_masks, mask_0_bias=1.0):
+#         """
+#         对 (B, N, num_masks) 的特征进行注意力加权
+#         :param num_masks: mask 的数量
+#         :param mask_0_bias: 对 mask_0 的静态偏置
+#         """
+#         super(MaskWeightFusion, self).__init__()
+#         self.num_masks = num_masks
+#         self.mask_0_bias = mask_0_bias
+#
+#         # 注意力权重生成网络
+#         self.attention_layer = nn.Sequential(
+#             nn.Linear(num_masks, 128),  # 输入为 num_masks
+#             nn.ReLU(),
+#             nn.Linear(128, num_masks),  # 输出权重的数量为 num_masks
+#             nn.Softmax(dim=-1)  # 权重归一化
+#         )
+#
+#         # 初始化参数
+#         self._initialize_weights()
+#
+#     def _initialize_weights(self):
+#         for m in self.attention_layer:
+#             if isinstance(m, nn.Linear):
+#                 nn.init.xavier_uniform_(m.weight)
+#                 if m.bias is not None:
+#                     nn.init.zeros_(m.bias)
+#
+#     def forward(self, mask_features):
+#         """
+#         前向传播
+#         :param mask_features: mask 特征 (B, N, num_masks)
+#         :return: 加权后的融合特征 (B, N)
+#         """
+#         B, N, num_masks = mask_features.shape
+#
+#         # 计算全局特征
+#         # global_features = mask_features.mean(dim=2, keepdim=False)  # (B, N)
+#
+#         # 计算注意力权重
+#         attention_weights = self.attention_layer(mask_features)  # (B, N, num_masks)
+#         attention_weights = attention_weights.clone()  # 创建 attention_weights 的副本
+#
+#         # 对 mask_0 添加静态偏置
+#         attention_weights[:, :, 0] += self.mask_0_bias
+#         attention_weights = torch.softmax(attention_weights, dim=-1)  # 再次归一化
+#
+#         # 动态加权融合
+#         fused_features = (attention_weights * mask_features).sum(dim=2)  # (B, N)
+#         return fused_features

@@ -1,0 +1,19 @@
+{
+    "transformer_config": [
+        {
+            "base_channel": 8,
+            "mid_channel": 64,
+            "num_heads": 4,
+            "down_rate": [2, 4, 4],
+            "mlp_ratio": 4,
+            "layer_num": 6,
+            "drop": 0.0,
+            "attn_drop": 0.0,
+            "position_encoding": true,
+            "attention_type": "FLASH2",
+            "softmax_scale": "entropy_invariance",
+            "train_avg_length": 12185,
+            "use_pe_proj": true
+        }
+    ]
+}

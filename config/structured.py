@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+import torch.nn as nn
 
 from hydra.core.config_store import ConfigStore
 from hydra.conf import RunDir
@@ -14,7 +15,7 @@ class CustomHydraRunDir(RunDir):
 @dataclass
 class RunConfig:
     name: str = 'debug'
-    mode: str = 'sample'
+    mode: str = 'sample'  # sample train
     mixed_precision: str = 'fp16'  # no
     cpu: bool = False
     seed: int = 42
@@ -23,7 +24,7 @@ class RunConfig:
     limit_train_batches: Optional[int] = None
     limit_val_batches: Optional[int] = None
     max_steps: int = 100_000
-    checkpoint_freq: int = 1_000
+    checkpoint_freq: int = 2000
     val_freq: int = 5_000
     vis_freq: int = 5_000
     log_step_freq: int = 20
@@ -56,7 +57,7 @@ class PointCloudProjectModelConfig:
     # Feature extraction arguments
     image_height: int = '${dataset.image_height}'
     image_width: int = '${dataset.image_width}'
-    image_feature_model:str = 'vit_small_patch16_224_msn'  # or 'vit_base_patch16_224_mae' or 'identity'
+    image_feature_model: str = 'vit_base_patch16_224_mae'  # or 'vit_base_patch16_224_mae' or 'identity'
     use_local_colors: bool = True
     use_local_features: bool = True
     use_global_features: bool = False
@@ -83,20 +84,20 @@ class PointCloudDiffusionModelConfig(PointCloudProjectModelConfig):
     beta_schedule: str = 'linear'  # 'custom' 'linear'
 
     # Point cloud model arguments
-    point_cloud_model: str = 'pvcnn'
-    point_cloud_model_embed_dim: int = 64
+    point_cloud_model: str = 'pvcnnplusplus'  # pvcnnplusplus
+    point_cloud_model_embed_dim: int = 512
 
 
 @dataclass
 class PointCloudColoringModelConfig(PointCloudProjectModelConfig):
     # Projection arguments
-    predict_shape = False
-    predict_color = True
+    predict_shape = True
+    predict_color = False
 
     # Point cloud model arguments
     point_cloud_model: str = 'pvcnn'
     point_cloud_model_layers: int = 1
-    point_cloud_model_embed_dim: int = 64
+    point_cloud_model_embed_dim: int = 512
 
 
 @dataclass
@@ -110,7 +111,7 @@ class PointCloudDatasetConfig(DatasetConfig):
     max_points: int = 150_000
     image_height: int = 1080
     image_width: int = 1920
-    scale_factor: float = 20.0
+    scale_factor: float = 10.0
     buildings_ids: Optional[List] = field(default_factory=list)
 
 
@@ -118,7 +119,7 @@ class PointCloudDatasetConfig(DatasetConfig):
 class BuildingsConfig(PointCloudDatasetConfig):
     type: str = 'buildings'
     root: str = '/home/datasets/UrbanBIS'
-    scene: List[str] = field(default_factory=lambda: ['Qingdao'])
+    scene: List[str] = field(default_factory=lambda: ['Qingdao', 'Lihu'])
     mask_images: bool = '${model.use_mask}'
     top_image: bool = '${model.use_top}'
     depth_images: bool = '${model.use_depth}'
@@ -131,8 +132,8 @@ class AugmentationConfig:
 
 @dataclass
 class DataloaderConfig:
-    batch_size: int = 1  # 2 for debug
-    num_workers: int = 8  # 0 for debug
+    batch_size: int = 1 # 2 for debug  32
+    num_workers: int = 8  # 0 for debug  32
 
 
 @dataclass
@@ -219,6 +220,12 @@ class CosineSchedulerConfig(SchedulerConfig):
 
 
 @dataclass
+class MVSFormerWithDinoConfig:
+    dino_model_path: str = "/home/code/Buildiffusion/cost_volume/dinov2_base"
+    transformer_config: Optional[List[Dict[str, Any]]] = None
+
+
+@dataclass
 class ProjectConfig:
     run: RunConfig
     logging: LoggingConfig
@@ -227,6 +234,7 @@ class ProjectConfig:
     dataloader: DataloaderConfig
     loss: LossConfig
     model: PointCloudProjectModelConfig
+    mvsmodel: MVSFormerWithDinoConfig
     ema: ExponentialMovingAverageConfig
     checkpoint: CheckpointConfig
     optimizer: OptimizerConfig
@@ -237,6 +245,7 @@ class ProjectConfig:
         {'run': 'default'},
         {'logging': 'default'},
         {'model': 'diffrec'},
+        {'mvsmodel': 'default'},
         {'dataset': 'buildings'},
         {'augmentations': 'default'},
         {'dataloader': 'default'},
@@ -254,6 +263,7 @@ cs.store(group='run', name='default', node=RunConfig)
 cs.store(group='logging', name='default', node=LoggingConfig)
 cs.store(group='model', name='diffrec', node=PointCloudDiffusionModelConfig)
 cs.store(group='model', name='coloring_model', node=PointCloudColoringModelConfig)
+cs.store(group="mvsmodel", name="default", node=MVSFormerWithDinoConfig)
 cs.store(group='dataset', name='buildings', node=BuildingsConfig)
 cs.store(group='augmentations', name='default', node=AugmentationConfig)
 cs.store(group='dataloader', name='default', node=DataloaderConfig)

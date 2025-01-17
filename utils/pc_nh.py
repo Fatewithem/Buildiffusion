@@ -183,19 +183,31 @@ def combine_planes_with_colors(filled_planes):
     return combined_cloud
 
 
+def combine_planes_with_normals(filled_planes, filled_normals):
+    combined_cloud = o3d.geometry.PointCloud()
+    colors_list = []
+
+    for filled_plane, filled_normal in zip(filled_planes, filled_normals):
+        cloud = o3d.geometry.PointCloud()
+        cloud.points = o3d.utility.Vector3dVector(filled_plane)
+
+        # 生成法向量
+        normals = np.repeat([filled_normal], len(filled_plane), axis=0)
+        cloud.normals = o3d.utility.Vector3dVector(normals)
+
+        # 为平面随机生成颜色
+        color = random_color()
+        colors_list.extend([color] * len(filled_plane))
+
+        # 合并点云
+        combined_cloud += cloud
+
+    # 设置颜色
+    combined_cloud.colors = o3d.utility.Vector3dVector(colors_list)
+    return combined_cloud
+
+
 def process_point_cloud(file_path, threshold_zero=0.1, threshold_one=0.1, threshold_neg_one=0.1):
-    """
-    处理点云数据，对平面进行分割和处理，将结果保存到同一文件夹，文件名后加 _plane。
-
-    Parameters:
-        file_path: 点云文件的路径 (.ply 格式)。
-        threshold_zero: 接近 0 的阈值。
-        threshold_one: 接近 1 的阈值。
-        threshold_neg_one: 接近 -1 的阈值。
-
-    Returns:
-        保存处理后的点云文件，文件名后加 _plane。
-    """
     # 读取点云数据 (.ply 格式)
     cloud = o3d.io.read_point_cloud(file_path)
     ds_pc = down_sampling(cloud)
@@ -215,16 +227,18 @@ def process_point_cloud(file_path, threshold_zero=0.1, threshold_one=0.1, thresh
                 planes_normal[i][j] = -1
 
     # 对每个平面进行均匀填充，仅对大于 1% 的平面进行处理
-    filled_planes = [
-        move_points_to_plane(plane, normal, num_points=ds_num)
-        for plane, normal in zip(planes, planes_normal)
-        if len(plane.points) / ds_num >= 0.01
-    ]
+    filled_planes = []
+    filled_normals = []
+
+    for plane, normal in zip(planes, planes_normal):
+        if len(plane.points) / ds_num >= 0.01:
+            filled_planes.append(move_points_to_plane(plane, normal, num_points=ds_num))
+            filled_normals.append(normal)
 
     print("Len: ", len(filled_planes))
 
-    # 将所有填充后的平面组合并仅保留外层点
-    final_cloud = combine_planes_with_colors(filled_planes)
+    # 将所有填充后的平面组合，并保留法向量信息
+    final_cloud = combine_planes_with_normals(filled_planes, filled_normals)
 
     # 进行统计滤波以去除噪声
     cl, ind = final_cloud.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
@@ -235,35 +249,70 @@ def process_point_cloud(file_path, threshold_zero=0.1, threshold_one=0.1, thresh
     file_base, file_ext = os.path.splitext(file_name)
     output_file = os.path.join(dir_path, f"{file_base}_plane{file_ext}")
 
-    # 保存处理后的结果
+    # 保存处理后的结果（包含点和法向量）
     o3d.io.write_point_cloud(output_file, final_cloud_filtered)
     print(f"Combined planes saved to {output_file}")
 
 
-if __name__ == '__main__':
-    # 输入和输出文件夹路径
-    # input_folder = "/home/datasets/UrbanBIS/Qingdao/"
-    #
-    # json_file_path = "/home/code/Buildiffusion/data/Qingdao/filter.json"
-    #
-    # with open(json_file_path, 'r') as f:
-    #     data = json.load(f)
-    #
-    # for folder, files in data.items():
-    #     file_name = 'untitled.ply'
-    #     obj_file_path = os.path.join("/home/datasets/UrbanBIS/Qingdao", folder, file_name)
-    #     print(obj_file_path)
-    #     process_point_cloud(obj_file_path)
+def read_ply_and_output_normals(file_path):
+    """
+    读取指定路径的 .ply 文件，并输出法向量信息。
 
-    # 输入文件路径，用户可以在此指定单个点云文件路径
-    file_path = "/home/code/Buildiffusion/outputs/debug/2024-10-26--12-28-30/sample/pred/buildings/pred.ply"
+    Parameters:
+        file_path (str): .ply 文件的路径。
 
+    Returns:
+        normals (numpy.ndarray): 提取的法向量数组，形状为 (N, 3)。
+    """
     # 检查文件是否存在
     if not os.path.exists(file_path):
         print(f"File not found: {file_path}")
-    else:
-        print(f"Processing file: {file_path}")
-        process_point_cloud(file_path)
+        return None
+
+    # 读取点云
+    cloud = o3d.io.read_point_cloud(file_path)
+    print(f"Point cloud loaded with {len(cloud.points)} points.")
+
+    # 检查是否存在法向量
+    if len(cloud.normals) == 0:
+        print("No normals found in the point cloud. Computing normals...")
+        cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+
+    # 提取法向量并转换为 NumPy 数组
+    normals = np.asarray(cloud.normals)
+
+    # 输出法向量信息
+    print(f"Extracted {len(normals)} normals:")
+    print(normals)
+
+    return normals
+
+
+if __name__ == '__main__':
+    # 输入和输出文件夹路径
+    input_folder = "/home/datasets/UrbanBIS/Lihu/"
+
+    json_file_path = "/home/datasets/UrbanBIS/Lihu/filter.json"
+
+    with open(json_file_path, 'r') as f:
+        data = json.load(f)
+
+    for folder, files in data.items():
+        file_name = 'untitled.ply'
+        obj_file_path = os.path.join("/home/datasets/UrbanBIS/Lihu", folder, file_name)
+        print(obj_file_path)
+        process_point_cloud(obj_file_path)
+
+    # 输入文件路径，用户可以在此指定单个点云文件路径
+    # file_path = "/home/datasets/UrbanBIS/Lihu/12.1/building/building4/untitled.ply"
+
+    # 检查文件是否存在
+    # if not os.path.exists(file_path):
+    #     print(f"File not found: {file_path}")
+    # else:
+    #     print(f"Processing file: {file_path}")
+    #     process_point_cloud(file_path)
+
 
 
 

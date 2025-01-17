@@ -1,7 +1,7 @@
 from config.structured import ProjectConfig
 from .model import ConditionalPointCloudDiffusionModel
-from .model_coloring import PointCloudColoringModel
 from .model_utils import set_requires_grad
+from cost_volume.cost_volume import build_cost_volume
 # from .mask_loss import get_mask_loss
 
 

@@ -10,6 +10,7 @@ from typing import Any, Iterable, List, Optional
 import hydra
 import torch
 import wandb
+import random
 from accelerate import Accelerator
 from omegaconf import DictConfig, OmegaConf
 from torchvision.transforms import functional as TVF
@@ -29,7 +30,6 @@ except ImportError:
 
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,4"
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
@@ -37,14 +37,9 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 @hydra.main(config_path='/home/code/Buildiffusion/config', config_name='config', version_base='1.1')
 def main(cfg: ProjectConfig):
 
-    # print("Available GPUs:", torch.cuda.device_count())
-
     # Accelerator
     accelerator = Accelerator(mixed_precision=cfg.run.mixed_precision, cpu=cfg.run.cpu, 
         gradient_accumulation_steps=cfg.optimizer.gradient_accumulation_steps)
-
-    # 查看使用的设备数
-    # print(f"Using {accelerator.num_processes} devices")
 
     # Logging
     training_utils.setup_distributed_print(accelerator.is_main_process)
@@ -52,13 +47,13 @@ def main(cfg: ProjectConfig):
     # 初始化 TensorboardX 日志记录器
     writer = SummaryWriter(log_dir=Path('tensorboard_logs'))
 
-    # if cfg.logging.wandb and accelerator.is_main_process:
-    #     wandb.init(project=cfg.logging.wandb_project, name=cfg.run.name, job_type=cfg.run.mode,
-    #                config=OmegaConf.to_container(cfg))
-    #     wandb.run.log_code(root=hydra.utils.get_original_cwd(),
-    #         include_fn=lambda p: any(p.endswith(ext) for ext in ('.py', '.json', '.yaml', '.md', '.txt.', '.gin')),
-    #         exclude_fn=lambda p: any(s in p for s in ('output', 'tmp', 'wandb', '.git', '.vscode')))
-    #     cfg: ProjectConfig = DictConfig(wandb.config.as_dict())  # get the config back from wandb for hyperparameter sweeps
+    if cfg.logging.wandb and accelerator.is_main_process:
+        wandb.init(project=cfg.logging.wandb_project, name=cfg.run.name, job_type=cfg.run.mode,
+                   config=OmegaConf.to_container(cfg))
+        wandb.run.log_code(root=hydra.utils.get_original_cwd(),
+            include_fn=lambda p: any(p.endswith(ext) for ext in ('.py', '.json', '.yaml', '.md', '.txt.', '.gin')),
+            exclude_fn=lambda p: any(s in p for s in ('output', 'tmp', 'wandb', '.git', '.vscode')))
+        cfg: ProjectConfig = DictConfig(wandb.config.as_dict())  # get the config back from wandb for hyperparameter sweeps
 
     # Configuration
     print(OmegaConf.to_yaml(cfg))
@@ -138,8 +133,8 @@ def main(cfg: ProjectConfig):
                 dataloader=dataloader_val,
                 accelerator=accelerator,
             )
-        # if cfg.logging.wandb and accelerator.is_main_process:
-        #     wandb.finish()
+        if cfg.logging.wandb and accelerator.is_main_process:
+            wandb.finish()
         time.sleep(5)
         return
 
@@ -160,6 +155,11 @@ def main(cfg: ProjectConfig):
         # Train progress bar
         log_header = f'Epoch: [{train_state.epoch}]'
         metric_logger = training_utils.MetricLogger(delimiter="  ")
+
+        # 添加新的记录器
+        # metric_logger.add_meter('loss_ddpm', training_utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+        # metric_logger.add_meter('loss_normals', training_utils.SmoothedValue(window_size=1, fmt='{value:.4f}'))
+
         metric_logger.add_meter('step', training_utils.SmoothedValue(window_size=1, fmt='{value:.0f}'))
         metric_logger.add_meter('lr', training_utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
         progress_bar: Iterable[Any] = metric_logger.log_every(dataloader_train, cfg.run.print_step_freq, 
@@ -174,6 +174,7 @@ def main(cfg: ProjectConfig):
             with accelerator.accumulate(model):
 
                 # Forward
+                # loss, loss_ddpm, loss_normals = model(batch, mode='train')
                 loss = model(batch, mode='train')
 
                 # Backward
@@ -193,7 +194,9 @@ def main(cfg: ProjectConfig):
                 # 记录损失值到 TensorboardX
                 if accelerator.sync_gradients and accelerator.is_main_process:
                     writer.add_scalar('Loss/train', loss.item(), train_state.step)
-                    writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], train_state.step)
+                    # writer.add_scalar('Loss/train_ddpm', loss_ddpm.item(), train_state.step)
+                    # writer.add_scalar('Loss/train_normals', loss_normals.item(), train_state.step)
+                    writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], train_state.step)
 
                 if accelerator.sync_gradients:
                     scheduler.step()
@@ -214,6 +217,8 @@ def main(cfg: ProjectConfig):
                     'lr': optimizer.param_groups[0]["lr"],
                     'step': train_state.step,
                     'train_loss': loss_value,
+                    # 'loss_ddpm': loss_ddpm.item(),
+                    # 'loss_normals': loss_normals.item(),
                     # 'grad_norm_unclipped': grad_norm_unclipped,  # useless w/ mixed prec
                     'grad_norm_clipped': grad_norm_clipped,
                 }
@@ -261,7 +266,7 @@ def main(cfg: ProjectConfig):
                     print(f'Ending training at: {datetime.datetime.now()}')
                     print(f'Final train state: {train_state}')
 
-                    # wandb.finish()
+                    wandb.finish()
                     time.sleep(5)
                     return
 
@@ -327,31 +332,6 @@ def visualize(
         filename = filestr.format(dir='metadata', name='metadata', i=0, ext='txt')
         Path(filename).write_text(metadata)
 
-        # 渲染参数
-        image_size = (1080, 1920)
-        image_width = 1920
-        image_height = 1080
-        aspect_ratio = image_width / image_height
-        cams = {"name": "_0", "location": [0, 150, 0], "rotation": [90.0, 0.0, 180.0], "fx": 2344.51416, "fy": 1978.18382,
-             "cx": 960.0, "cy": 540.0}  # 相机 0
-
-        # 渲染设置
-        raster_settings = PointsRasterizationSettings(
-            image_size=image_size,
-            radius=0.01,
-            points_per_pixel=10,
-            bin_size=0
-        )
-
-        # 渲染器初始化
-        renderer = PointsRenderer(
-            rasterizer=PointsRasterizer(
-                cameras=None,
-                raster_settings=raster_settings
-            ),
-            compositor=AlphaCompositor()
-        )
-
         location = torch.tensor(cam["location"], dtype=torch.float32, device=device).unsqueeze(0)
         rotation = torch.tensor(cam["rotation"], dtype=torch.float32, device=device).unsqueeze(0)
         rotation = rotation * (torch.pi / 180.0)
@@ -407,11 +387,11 @@ def visualize(
                 wandb_log_dict[filename_image_wandb] = wandb.Image(filename_image)
 
                 # Render gt/pred point cloud from rotating view
-                filename_video = filestr.format(dir='videos', name=name, i=i, ext='mp4')
-                filename_video_wandb = filestr_wandb.format(dir='videos', name=name, i=i)
-                diffusion_utils.visualize_pointcloud_batch_pytorch3d(pointclouds=pointcloud, 
-                    output_file_video=filename_video, num_frames=30, scale_factor=cfg.model.scale_factor)
-                wandb_log_dict[filename_video_wandb] = wandb.Video(filename_video)
+                # filename_video = filestr.format(dir='videos', name=name, i=i, ext='mp4')
+                # filename_video_wandb = filestr_wandb.format(dir='videos', name=name, i=i)
+                # diffusion_utils.visualize_pointcloud_batch_pytorch3d(pointclouds=pointcloud,
+                #     output_file_video=filename_video, num_frames=30, scale_factor=cfg.model.scale_factor)
+                # wandb_log_dict[filename_video_wandb] = wandb.Video(filename_video)
 
             # Render point cloud diffusion evolution
             filename_evo = filestr.format(dir='evolutions', name='evolutions', i=i, ext='mp4')
@@ -472,9 +452,13 @@ def sample(
             output: Pointclouds
             all_outputs: List[Pointclouds]  # list of B Pointclouds, each with a batch size of return_sample_every_n_steps
 
+            print(f"len(output): {len(output)}")
+
             # Save individual samples
-            for i in range(5):  # len(output)
+            for i in range(len(output)):  # len(output)
                 # sequence_name = batch.sequence_name[i]
+                i = random.randint(0, len(output) - 1)  # 在 0 到 len(output) - 1 之间生成一个随机整数
+                print(f"name: {i}")
                 sequence_name = f"buildings_{i}"
                 sequence_category = 'buildings'
                 (output_dir / 'gt' / sequence_category).mkdir(exist_ok=True, parents=True)
@@ -482,11 +466,49 @@ def sample(
                 (output_dir / 'images' / sequence_category).mkdir(exist_ok=True, parents=True)
                 (output_dir / 'metadata' / sequence_category).mkdir(exist_ok=True, parents=True)
                 (output_dir / 'evolutions' / sequence_category).mkdir(exist_ok=True, parents=True)
-                
+
+                pointcloud = output[i]
+
+                def save_pointcloud_to_ply(pointcloud, file_path):
+                    """
+                    保存 Pointclouds 对象为 PLY 文件。
+
+                    :param pointcloud: Pointclouds 对象
+                    :param file_path: 目标文件路径
+                    """
+                    verts = pointcloud.points_padded()[0].cpu().numpy()  # 点
+                    features = pointcloud.features_padded()[
+                        0].cpu().numpy() if pointcloud.features_padded() is not None else None
+
+                    with open(file_path, "w") as f:
+                        # 写入 PLY 文件头
+                        f.write("ply\n")
+                        f.write("format ascii 1.0\n")
+                        f.write(f"element vertex {verts.shape[0]}\n")
+                        f.write("property float x\n")
+                        f.write("property float y\n")
+                        f.write("property float z\n")
+                        if features is not None:
+                            f.write("property uchar red\n")
+                            f.write("property uchar green\n")
+                            f.write("property uchar blue\n")
+                        f.write("end_header\n")
+
+                        # 写入顶点及颜色
+                        for i, vert in enumerate(verts):
+                            if features is not None:
+                                color = (features[i] * 255).astype(int)  # 颜色归一化到 0-255
+                                f.write(f"{vert[0]} {vert[1]} {vert[2]} {color[0]} {color[1]} {color[2]}\n")
+                            else:
+                                f.write(f"{vert[0]} {vert[1]} {vert[2]}\n")
+
+                save_pointcloud_to_ply(pointcloud, "/home/code/Buildiffusion/output.ply")
+
                 # Save ground truth
                 io.save_pointcloud(data=batch['pointclouds'][i], path=filestr.format(dir='gt',
                     category=sequence_category, name=sequence_name, ext='ply'))
-                
+
+
                 # Save generation
                 io.save_pointcloud(data=output[i], path=filestr.format(dir='pred', 
                     category=sequence_category, name=sequence_name, ext='ply'))
