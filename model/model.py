@@ -18,8 +18,8 @@ from pytorch3d.loss import chamfer_distance
 # 保留注释，移除顶层导入，避免循环依赖
 from .model_utils import get_num_points, get_custom_betas, render_point_cloud
 from .point_cloud_model import PointCloudModel
-from .projection_model import PointCloudProjectionModel, MaskWeightFusion
-from cost_volume.cost_volume import MVSFormerWithDino
+from .projection_model import PointCloudProjectionModel
+# from cost_volume.cost_volume import MVSFormerWithDino
 from cost_volume.utils import load_config
 
 
@@ -92,7 +92,7 @@ class ConditionalPointCloudDiffusionModel(PointCloudProjectionModel):
             masks: Optional[Tensor],
             camera: Optional[Dict],
             images: Optional[Tensor],
-            return_intermediate_steps: bool = False
+            planes: Optional[Dict],
     ):
         # Normalize colors and convert to tensor
         x_0 = self.point_cloud_to_tensor(pc, normalize=True, scale=False)  # (-1, 1)

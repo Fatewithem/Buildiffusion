@@ -379,7 +379,7 @@ def set_seed(seed):
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
     if using_distributed():
-        print(f'Seeding node {rank} with seed {seed}', force=True)
+        print(f'Seeding node {rank} with seed {seed}')
     else:
         print(f'Seeding node {rank} with seed {seed}')
 

@@ -21,8 +21,10 @@ import seaborn as sns
 
 from .feature_model import FeatureModel
 from .model_utils import compute_distance_transform, render_point_cloud
-from cost_volume.cost_volume import build_cost_volume, MVSFormerWithDino, DinoFeatureExtractor
+# from cost_volume.cost_volume import build_cost_volume, MVSFormerWithDino, DinoFeatureExtractor
+from cost_volume.cost_volume import DinoFeatureExtractor
 from sklearn.decomposition import PCA
+from cost_volume.utils import load_config
 
 SchedulerClass = Union[DDPMScheduler, DDIMScheduler, PNDMScheduler, LMSDiscreteScheduler]
 
@@ -38,11 +40,11 @@ from pytorch3d.structures import Pointclouds
 class PointCloudProjectionModel(ModelMixin):
     def __init__(
             self,
-            image_height: int,
-            image_width: int,
-            use_top: bool,
-            use_depth: bool,
-            image_feature_model: str,
+            image_height: int = 224,
+            image_width: int = 224,
+            use_top: bool = True,
+            use_depth: bool = True,
+            image_feature_model: str = "2222222",
             use_local_colors: bool = True,
             use_local_features: bool = True,
             use_global_features: bool = True,
@@ -90,15 +92,15 @@ class PointCloudProjectionModel(ModelMixin):
         self.dino_extractor = DinoFeatureExtractor(model_path="/home/code/Buildiffusion/cost_volume/dinov2_base")
 
         # 加载配置和初始化模型
-        config_path = "/home/code/Dino/config/config.json"
-        config = load_config(config_path)
-        transformer_config = config['transformer_config']
-        model_path = "/home/code/Buildiffusion/cost_volume/dinov2_base"
+        # config_path = "/home/code/Dino/config/config.json"
+        # config = load_config(config_path)
+        # transformer_config = config['transformer_config']
+        # model_path = "/home/code/Buildiffusion/cost_volume/dinov2_base"
 
-        self.mvs_cost_volume_model = MVSFormerWithDino(
-            dino_model_path=model_path,
-            transformer_config=transformer_config,
-        )
+        # self.mvs_cost_volume_model = MVSFormerWithDino(
+        #     dino_model_path=model_path,
+        #     transformer_config=transformer_config,
+        # )
 
         # Input size
         # self.in_channels = 3  # 3 for 3D point positions
@@ -332,184 +334,131 @@ class PointCloudProjectionModel(ModelMixin):
 
         return x_t_input
 
-    def get_input_with_cost_volume(
-            self,
-            x_t: torch.Tensor,
-            camera: Optional[CamerasBase],
-            image: Optional[torch.Tensor],
-            mask: Optional[torch.Tensor],  # tuple B
-            t: Optional[torch.Tensor],
-            device: torch.device,  # 添加 device 参数
-    ):
-        # 确定输入张量所在的设备
-        device = x_t.device
-        B, N = x_t.shape[:2]
+    # def get_input_with_cost_volume(
+    #         self,
+    #         x_t: torch.Tensor,
+    #         camera: Optional[CamerasBase],
+    #         image: Optional[torch.Tensor],
+    #         mask: Optional[torch.Tensor],  # tuple B
+    #         t: Optional[torch.Tensor],
+    #         device: torch.device,  # 添加 device 参数
+    # ):
+    #     # 确定输入张量所在的设备
+    #     device = x_t.device
+    #     B, N = x_t.shape[:2]
+    #
+    #     # 堆叠成张量
+    #     image_tensor = torch.stack(image, dim=0)
+    #     mask_tensor = torch.stack(mask, dim=0)
+    #
+    #     model = self.mvs_cost_volume_model
+    #
+    #     outputs = build_cost_volume(B, image_tensor, mask_tensor, model, device=device)
+    #     prob = outputs['prob_volume']
+    #
+    #     # 打印张量的最大值和最小值
+    #     # print(f"Max value: {prob.max().item()}")
+    #     # print(f"Min value: {prob.min().item()}")
+    #     # print(f"Mean value: {prob.mean().item()}")
+    #
+    #     x_t_input = [x_t.to(device)]
+    #
+    #     camera = camera[1]
+    #     cost_volume_proj = self.surface_projection(points=x_t[:, :, :3], camera=camera, local_features=prob).to(device)
+    #     # print(f"Max value: {cost_volume_proj.max().item()}")
+    #     # print(f"Min value: {cost_volume_proj.min().item()}")
+    #     # print(f"Mean value: {cost_volume_proj.mean().item()}")
+    #
+    #     # # x.shape = [1, 50000, 32]
+    #     # x_2d = cost_volume_proj[0].cpu().numpy()  # [50000, 32], 先转到 numpy
+    #     # pca = PCA(n_components=2)
+    #     # points_2d = pca.fit_transform(x_2d)  # [50000, 2]
+    #     #
+    #     # plt.figure(figsize=(6, 6))
+    #     # plt.scatter(points_2d[:, 0], points_2d[:, 1], s=1)  # s=1: 点大小
+    #     # plt.title("PCA to 2D")
+    #     #
+    #     # # 将图片保存到本地，文件名可自定义
+    #     # plt.savefig("/home/code/Buildiffusion/pca_2d_scatter.png", dpi=300, bbox_inches="tight")
+    #
+    #     x_t_input.append(cost_volume_proj)
+    #     x_t_input = torch.cat(x_t_input, dim=2)
+    #
+    #     return x_t_input
 
-        # 堆叠成张量
-        image_tensor = torch.stack(image, dim=0)
-        mask_tensor = torch.stack(mask, dim=0)
+    # def cost_volume(
+    #         self,
+    #         x_t: torch.Tensor,
+    #         camera: Optional[CamerasBase],
+    #         image: Optional[torch.Tensor],
+    #         model: MVSFormerWithDino,
+    # ):
+    #     # 确定输入张量所在的设备
+    #     device = x_t.device
+    #     B, N = x_t.shape[:2]
+    #
+    #     # 堆叠成张量
+    #     image_tensor = torch.stack(image, dim=0)
+    #
+    #     outputs = build_cost_volume(B, image_tensor, device=device)
+    #
+    #     prob = outputs['prob_volume']
+    #
+    #     camera = camera[1]
+    #     cost_volume_proj = self.surface_projection(points=x_t[:, :, :3], camera=camera, local_features=prob).to(device)
+    #
+    #     return cost_volume_proj
 
-        model = self.mvs_cost_volume_model
-
-        outputs = build_cost_volume(B, image_tensor, mask_tensor, model, device=device)
-        prob = outputs['prob_volume']
-
-        # 打印张量的最大值和最小值
-        # print(f"Max value: {prob.max().item()}")
-        # print(f"Min value: {prob.min().item()}")
-        # print(f"Mean value: {prob.mean().item()}")
-
-        x_t_input = [x_t.to(device)]
-
-        camera = camera[1]
-        cost_volume_proj = self.surface_projection(points=x_t[:, :, :3], camera=camera, local_features=prob).to(device)
-        # print(f"Max value: {cost_volume_proj.max().item()}")
-        # print(f"Min value: {cost_volume_proj.min().item()}")
-        # print(f"Mean value: {cost_volume_proj.mean().item()}")
-
-        # # x.shape = [1, 50000, 32]
-        # x_2d = cost_volume_proj[0].cpu().numpy()  # [50000, 32], 先转到 numpy
-        # pca = PCA(n_components=2)
-        # points_2d = pca.fit_transform(x_2d)  # [50000, 2]
-        #
-        # plt.figure(figsize=(6, 6))
-        # plt.scatter(points_2d[:, 0], points_2d[:, 1], s=1)  # s=1: 点大小
-        # plt.title("PCA to 2D")
-        #
-        # # 将图片保存到本地，文件名可自定义
-        # plt.savefig("/home/code/Buildiffusion/pca_2d_scatter.png", dpi=300, bbox_inches="tight")
-
-        x_t_input.append(cost_volume_proj)
-        x_t_input = torch.cat(x_t_input, dim=2)
-
-        return x_t_input
-
-    def cost_volume(
-            self,
-            x_t: torch.Tensor,
-            camera: Optional[CamerasBase],
-            image: Optional[torch.Tensor],
-            model: MVSFormerWithDino,
-    ):
-        # 确定输入张量所在的设备
-        device = x_t.device
-        B, N = x_t.shape[:2]
-
-        # 堆叠成张量
-        image_tensor = torch.stack(image, dim=0)
-
-        outputs = build_cost_volume(B, image_tensor, device=device)
-
-        prob = outputs['prob_volume']
-
-        camera = camera[1]
-        cost_volume_proj = self.surface_projection(points=x_t[:, :, :3], camera=camera, local_features=prob).to(device)
-
-        return cost_volume_proj
-
-    def get_input_with_bae(
-            self,
-            x_t: torch.Tensor,
-            camera: Optional[CamerasBase],
-            # image: Optional[torch.Tensor],  # tuple B
-            mask: Optional[torch.Tensor],  # tuple B
-            t: Optional[torch.Tensor],
-    ):
-        device = x_t.device
-        B, N = x_t.shape[:2]
-
-        # 初始化 mask 张量
-        num_masks = 5  # 假设有 5 个 mask
-        mask_list = []
-        for i in range(num_masks):
-            mask_tensor = torch.zeros((B, 1, 546, 966), device=device)
-            for b, m in enumerate(mask):
-                mask_tensor[b] = m[i].to(device)
-            mask_list.append(mask_tensor)
-
-        # 特征投影
-        x_t_input = [x_t.to(device)]
-        x_t_feature = []
-        x_t_bae = []
-
-        for c, m in zip(camera, mask_list):
-            cdt = compute_distance_transform(m).to(device)
-
-            mask_proj = self.surface_projection(points=x_t[:, :, :3], camera=c, local_features=m).to(device)
-            cdt_proj = self.surface_projection(points=x_t[:, :, :3], camera=c, local_features=cdt).to(device)
-
-            x_t_feature.append(mask_proj)
-            x_t_bae.append(cdt_proj)
-
-        # 堆叠特征
-        mask_proj_features = torch.stack(x_t_feature, dim=2).squeeze(-1)  # (B, N, num_masks, feature_dim)
-        cdt_proj_features = torch.stack(x_t_bae, dim=2).squeeze(-1)  # (B, N, num_masks, feature_dim)
-
-        fused_features = self.mask_weight_fusion(mask_proj_features)  # (B, N, 2 * feature_dim)
-        fused_features = fused_features.unsqueeze(-1)
-
-        # 拼接最终输入
-        x_t_input.append(fused_features)
-        x_t_input.append(mask_proj_features[:, :, 0:1])
-        x_t_input.append(cdt_proj_features[:, :, 0:1])
-
-        x_t_input = torch.cat(x_t_input, dim=2)  # (B, N, feature_dim + 2 * feature_dim)
-
-        return x_t_input
+    # def get_input_with_bae(
+    #         self,
+    #         x_t: torch.Tensor,
+    #         camera: Optional[CamerasBase],
+    #         # image: Optional[torch.Tensor],  # tuple B
+    #         mask: Optional[torch.Tensor],  # tuple B
+    #         t: Optional[torch.Tensor],
+    # ):
+    #     device = x_t.device
+    #     B, N = x_t.shape[:2]
+    #
+    #     # 初始化 mask 张量
+    #     num_masks = 5  # 假设有 5 个 mask
+    #     mask_list = []
+    #     for i in range(num_masks):
+    #         mask_tensor = torch.zeros((B, 1, 546, 966), device=device)
+    #         for b, m in enumerate(mask):
+    #             mask_tensor[b] = m[i].to(device)
+    #         mask_list.append(mask_tensor)
+    #
+    #     # 特征投影
+    #     x_t_input = [x_t.to(device)]
+    #     x_t_feature = []
+    #     x_t_bae = []
+    #
+    #     for c, m in zip(camera, mask_list):
+    #         cdt = compute_distance_transform(m).to(device)
+    #
+    #         mask_proj = self.surface_projection(points=x_t[:, :, :3], camera=c, local_features=m).to(device)
+    #         cdt_proj = self.surface_projection(points=x_t[:, :, :3], camera=c, local_features=cdt).to(device)
+    #
+    #         x_t_feature.append(mask_proj)
+    #         x_t_bae.append(cdt_proj)
+    #
+    #     # 堆叠特征
+    #     mask_proj_features = torch.stack(x_t_feature, dim=2).squeeze(-1)  # (B, N, num_masks, feature_dim)
+    #     cdt_proj_features = torch.stack(x_t_bae, dim=2).squeeze(-1)  # (B, N, num_masks, feature_dim)
+    #
+    #     fused_features = self.mask_weight_fusion(mask_proj_features)  # (B, N, 2 * feature_dim)
+    #     fused_features = fused_features.unsqueeze(-1)
+    #
+    #     # 拼接最终输入
+    #     x_t_input.append(fused_features)
+    #     x_t_input.append(mask_proj_features[:, :, 0:1])
+    #     x_t_input.append(cdt_proj_features[:, :, 0:1])
+    #
+    #     x_t_input = torch.cat(x_t_input, dim=2)  # (B, N, feature_dim + 2 * feature_dim)
+    #
+    #     return x_t_input
 
     def forward(self, batch: FrameData, mode: str = 'train', **kwargs):
         """ The forward method may be defined differently for different models. """
         raise NotImplementedError()
-
-
-# class MaskWeightFusion(nn.Module):
-#     def __init__(self, num_masks, mask_0_bias=1.0):
-#         """
-#         对 (B, N, num_masks) 的特征进行注意力加权
-#         :param num_masks: mask 的数量
-#         :param mask_0_bias: 对 mask_0 的静态偏置
-#         """
-#         super(MaskWeightFusion, self).__init__()
-#         self.num_masks = num_masks
-#         self.mask_0_bias = mask_0_bias
-#
-#         # 注意力权重生成网络
-#         self.attention_layer = nn.Sequential(
-#             nn.Linear(num_masks, 128),  # 输入为 num_masks
-#             nn.ReLU(),
-#             nn.Linear(128, num_masks),  # 输出权重的数量为 num_masks
-#             nn.Softmax(dim=-1)  # 权重归一化
-#         )
-#
-#         # 初始化参数
-#         self._initialize_weights()
-#
-#     def _initialize_weights(self):
-#         for m in self.attention_layer:
-#             if isinstance(m, nn.Linear):
-#                 nn.init.xavier_uniform_(m.weight)
-#                 if m.bias is not None:
-#                     nn.init.zeros_(m.bias)
-#
-#     def forward(self, mask_features):
-#         """
-#         前向传播
-#         :param mask_features: mask 特征 (B, N, num_masks)
-#         :return: 加权后的融合特征 (B, N)
-#         """
-#         B, N, num_masks = mask_features.shape
-#
-#         # 计算全局特征
-#         # global_features = mask_features.mean(dim=2, keepdim=False)  # (B, N)
-#
-#         # 计算注意力权重
-#         attention_weights = self.attention_layer(mask_features)  # (B, N, num_masks)
-#         attention_weights = attention_weights.clone()  # 创建 attention_weights 的副本
-#
-#         # 对 mask_0 添加静态偏置
-#         attention_weights[:, :, 0] += self.mask_0_bias
-#         attention_weights = torch.softmax(attention_weights, dim=-1)  # 再次归一化
-#
-#         # 动态加权融合
-#         fused_features = (attention_weights * mask_features).sum(dim=2)  # (B, N)
-#         return fused_features

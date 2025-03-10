@@ -1,5 +1,7 @@
 import numpy as np
 import open3d as o3d
+import json
+import os
 
 
 def farthest_point_sampling(points, num_samples):
@@ -37,40 +39,82 @@ def farthest_point_sampling(points, num_samples):
 
 def downsample_ply_with_fps(input_ply_path, output_ply_path, num_samples):
     """
-    Downsample a PLY file using Farthest Point Sampling (FPS).
+    使用最远点采样（FPS）来降采样 PLY 文件，并尽可能保留颜色信息。
 
-    :param input_ply_path: Path to the input PLY file.
-    :param output_ply_path: Path to save the downsampled PLY file.
-    :param num_samples: Number of points to sample.
+    :param input_ply_path: 输入 PLY 文件路径。
+    :param output_ply_path: 输出降采样 PLY 文件路径。
+    :param num_samples: 要采样的点数。
     """
     try:
-        # Load the PLY file
+        # 加载 PLY 文件
         pcd = o3d.io.read_point_cloud(input_ply_path)
         points = np.asarray(pcd.points)
 
         if len(points) == 0:
-            print("The PLY file contains no points.")
+            print("PLY 文件中没有点数据。")
             return None
 
-        print(f"Original number of points: {len(points)}")
+        print(f"原始点的数量: {len(points)}")
 
-        # Perform FPS
-        sampled_points = farthest_point_sampling(points, num_samples)
+        # 如果点云包含颜色信息，则提取颜色
+        colors = None
+        if pcd.has_colors():
+            colors = np.asarray(pcd.colors)
+            print("检测到颜色信息，采样后将保留颜色。")
 
-        # Create a new point cloud with sampled points
+        # 执行 FPS，得到采样后的点和采样时选中的索引
+        sampled_points, sampled_indices = farthest_point_sampling(points, num_samples)
+
+        # 创建一个新的点云对象，并使用采样后的点
         downsampled_pcd = o3d.geometry.PointCloud()
         downsampled_pcd.points = o3d.utility.Vector3dVector(sampled_points)
 
-        # Save the downsampled point cloud
+        # 如果原点云有颜色信息，则根据索引取出对应的颜色
+        if colors is not None:
+            sampled_colors = colors[sampled_indices]
+            downsampled_pcd.colors = o3d.utility.Vector3dVector(sampled_colors)
+
+        # 保存降采样后的点云文件
         o3d.io.write_point_cloud(output_ply_path, downsampled_pcd)
-        print(f"Number of points after FPS: {num_samples}")
-        print(f"Downsampled PLY file saved to: {output_ply_path}")
+        print(f"FPS 之后的点数: {num_samples}")
+        print(f"降采样后的 PLY 文件已保存至: {output_ply_path}")
 
         return downsampled_pcd
 
     except Exception as e:
-        print(f"Error processing PLY file: {e}")
+        print(f"处理 PLY 文件时出错: {e}")
         return None
+
+
+if __name__ == "__main__":
+    # 输入和输出文件夹路径
+    json_file_path = "/home/code/Buildiffusion/data/Qingdao/filter.json"
+
+    print(f"Loading JSON data from {json_file_path}")
+    with open(json_file_path, 'r') as f:
+        data = json.load(f)
+
+    for folder, files in data.items():
+        for file_name in files.keys():
+            if file_name.endswith(".obj"):
+                obj_file_path = os.path.join("/home/datasets/UrbanBIS/Qingdao", folder, file_name)
+                ply_file_name = os.path.splitext(file_name)[0] + ".ply"
+                ply_file_fps_name = os.path.splitext(file_name)[0] + "_fps.ply"
+
+                root = os.path.join("/home/datasets/UrbanBIS/Qingdao", folder)
+                print(f"Root: {root}")
+                ply_file_path = os.path.join(root, ply_file_name)
+                ply_file_fps_path = os.path.join(root, ply_file_fps_name)
+
+                # 检查.ply文件是否存在
+                if not os.path.exists(ply_file_path):
+                    print(f"{ply_file_path} does not exist! Skipping this file.")
+                    continue  # 如果文件不存在，跳过
+
+                print(f"Processing {ply_file_path}")
+
+                # 调用转换函数
+                downsample_ply_with_fps(ply_file_path, ply_file_fps_path, 10000)
 
 
 # Example usage

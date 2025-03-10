@@ -3,6 +3,7 @@ import trimesh
 import json
 import open3d as o3d
 import numpy as np
+import torch
 
 
 def calculate_bounding_box_center(mesh):
@@ -83,31 +84,130 @@ def convert_obj_to_point_cloud(obj_file_path, ply_file_path, target_scale, num_p
     print(f"Successfully converted {obj_file_path} to {ply_file_path}")
 
 
+def farthest_point_sample_from_file(input_file: str, output_file: str, num_points: int):
+    """
+    Perform Farthest Point Sampling (FPS) on a point cloud loaded from a file
+    and save the downsampled point cloud to a new file.
+
+    Args:
+    - input_file (str): Path to the input point cloud file (e.g., PLY, XYZ, PCD).
+    - output_file (str): Path to save the downsampled point cloud (e.g., PLY, XYZ, PCD).
+    - num_points (int): The number of points to downsample to.
+    """
+    # Step 1: Load the point cloud from the input file
+    pcd = o3d.io.read_point_cloud(input_file)
+
+    # Convert to numpy array
+    points_np = np.asarray(pcd.points)
+
+    # Step 2: Convert the numpy array to a torch tensor
+    points = torch.tensor(points_np, dtype=torch.float32)
+
+    # Step 3: Perform Farthest Point Sampling (FPS)
+    sampled_points = farthest_point_sample(points, num_points)
+
+    # Step 4: Convert the downsampled points back to Open3D PointCloud format
+    downsampled_pcd = o3d.geometry.PointCloud()
+    downsampled_pcd.points = o3d.utility.Vector3dVector(sampled_points.numpy())
+
+    # Step 5: Save the downsampled point cloud to the output file
+    o3d.io.write_point_cloud(output_file, downsampled_pcd)
+    print(f"Downsampled point cloud saved to: {output_file}")
+
+
+def farthest_point_sample(points: torch.Tensor, num_points: int) -> torch.Tensor:
+    """
+    Perform Farthest Point Sampling (FPS) on a point cloud to downsample it to `num_points`.
+
+    Args:
+    - points (torch.Tensor): The input point cloud tensor of shape (N, 3).
+    - num_points (int): The number of points to downsample to.
+
+    Returns:
+    - torch.Tensor: The downsampled point cloud tensor of shape (num_points, 3).
+    """
+    # Get the number of points in the point cloud
+    N = points.size(0)
+
+    # Initialize an array to hold the indices of the farthest points
+    farthest_points_idx = torch.zeros(num_points, dtype=torch.long)
+
+    # Randomly choose the first point
+    farthest_points_idx[0] = torch.randint(0, N, (1,))
+
+    # Initialize a tensor to hold the distances from each point to the closest selected point
+    dist = torch.ones(N) * 1e10  # Initialize with a very large value
+
+    for i in range(1, num_points):
+        # Get the distances from all points to the closest selected point
+        dist_to_closest = torch.cdist(points, points[farthest_points_idx[:i]], p=2).min(dim=1)[0]
+        dist = torch.min(dist, dist_to_closest)
+
+        # Select the farthest point
+        farthest_points_idx[i] = torch.argmax(dist)
+
+    # Select the points corresponding to the farthest indices
+    sampled_points = points[farthest_points_idx]
+
+    return sampled_points
+
+
 if __name__ == "__main__":
-    # 输入和输出文件夹路径
-    input_folder = "/home/datasets/UrbanBIS/Qingdao/0005-0019"
+    # # 输入和输出文件夹路径
+    # input_folder = "/home/datasets/UrbanBIS/Qingdao/0005-0019"
+    #
+    # json_file_path = "/home/code/Buildiffusion/data/Longhua/filter.json"
+    # with open(json_file_path, 'r') as f:
+    #     data = json.load(f)
+    #
+    # for folder, files in data.items():
+    #     for file_name in files.keys():
+    #         if file_name.endswith(".obj"):
+    #             obj_file_path = os.path.join("/home/datasets/UrbanBIS/Longhua", folder, file_name)
+    #             ply_file_name = os.path.splitext(file_name)[0] + ".ply"
+    #
+    #             root = os.path.join("/home/datasets/UrbanBIS/Longhua", folder)
+    #             print(f"Root: {root}")
+    #             ply_file_path = os.path.join(root, ply_file_name)
+    #
+    #             # 检查.ply文件是否存在
+    #             if os.path.exists(ply_file_path):
+    #                 print(f"{ply_file_path} already exists. Skipping conversion.")
+    #                 continue  # 如果存在，跳过转换
+    #
+    #             # 调用转换函数
+    #             convert_obj_to_point_cloud(obj_file_path, ply_file_path, 10.0)
 
-    json_file_path = "/home/code/Buildiffusion/data/Lihu/filter.json"
-    with open(json_file_path, 'r') as f:
-        data = json.load(f)
 
-    for folder, files in data.items():
-        for file_name in files.keys():
-            if file_name.endswith(".obj"):
-                obj_file_path = os.path.join("/home/datasets/UrbanBIS/Lihu", folder, file_name)
-                ply_file_name = os.path.splitext(file_name)[0] + ".ply"
-
-                root = os.path.join("/home/datasets/UrbanBIS/Lihu", folder)
-                print(f"Root: {root}")
-                ply_file_path = os.path.join(root, ply_file_name)
-
-                # 检查.ply文件是否存在
-                if os.path.exists(ply_file_path):
-                    print(f"{ply_file_path} already exists. Skipping conversion.")
-                    continue  # 如果存在，跳过转换
-
-                # 调用转换函数
-                convert_obj_to_point_cloud(obj_file_path, ply_file_path, 20.0)
-    # convert_obj_to_point_cloud("/home/code/Blender/data/untitled.obj",
-    #                            "/home/code/Blender/data/processed_object_0.ply",
+    # convert_obj_to_point_cloud("/home/datasets/UrbanBIS/Longhua/1.2/building/building7/untitled.obj",
+    #                            "/home/datasets/UrbanBIS/Longhua/1.2/building/building7/untitled.ply",
     #                            10.0)
+
+        # 输入和输出文件夹路径
+        input_folder = "/home/datasets/UrbanBIS/Qingdao/0005-0019"
+
+        json_file_path = "/home/code/Buildiffusion/data/Longhua/filter.json"
+        with open(json_file_path, 'r') as f:
+            data = json.load(f)
+
+        for folder, files in data.items():
+            for file_name in files.keys():
+                if file_name.endswith(".obj"):
+                    obj_file_path = os.path.join("/home/datasets/UrbanBIS/Longhua", folder, file_name)
+                    ply_file_name = os.path.splitext(file_name)[0] + ".ply"
+                    ply_file_fps_name = os.path.splitext(file_name)[0] + "_fps.ply"
+
+                    root = os.path.join("/home/datasets/UrbanBIS/Longhua", folder)
+                    print(f"Root: {root}")
+                    ply_file_path = os.path.join(root, ply_file_name)
+                    ply_file_fps_path = os.path.join(root, ply_file_fps_name)
+
+                    # 检查.ply文件是否存在
+                    # if os.path.exists(ply_file_path):
+                    #     print(f"{ply_file_path} already exists. Skipping conversion.")
+                    #     continue  # 如果存在，跳过转换
+
+                    print(ply_file_path)
+
+                    # 调用转换函数
+                    farthest_point_sample_from_file(ply_file_path, ply_file_fps_path, 20000)

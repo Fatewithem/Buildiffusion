@@ -80,8 +80,6 @@ class BuildingsDataset(Dataset):
         rotation_rad = rotation_tensor * (torch.pi / 180.0)
         R = euler_angles_to_matrix(rotation_rad, "XYZ").float()
 
-
-
         # 计算平移向量 T
         T = location_tensor
 
@@ -102,20 +100,22 @@ class BuildingsDataset(Dataset):
         return len(self.file_paths)
 
     def __getitem__(self, idx: int) -> Any:
-        file_path = self.file_paths[idx]
-        # print(f"Loading point cloud from: {file_path}")  # 打印正在加载的文件路径
+        # ------------ 准备工作 ------------
 
+        file_path = self.file_paths[idx]
         last_folder = os.path.basename(file_path)
         # print(file_path)
         masks_plane_path = 'blender'
         masks_path = os.path.join(file_path, masks_plane_path)
 
-        pointcloud_path = os.path.join(file_path, "untitled.ply")
+        pointcloud_path = os.path.join(file_path, "untitled_fps.ply")
+        pointcloud_plane_path = os.path.join(file_path, "untitled_plane.pt")
 
         transform = transforms.ToTensor()
         masks_tensor = torch.zeros((5, 1, 1080, 1920))
         images_tensor = torch.zeros((5, 3, 1080, 1920))
 
+        # ------------ 读取RGB ------------
         # 遍历 rgb 文件并处理
         for i in range(5):
             img_name = f"{last_folder}_{i}.png"
@@ -149,6 +149,7 @@ class BuildingsDataset(Dataset):
         # 使用插值调整尺寸
         images_tensor_resized = F.interpolate(images_tensor, size=(new_H, new_W), mode='bicubic', align_corners=False)
 
+        # ------------ 读取Mask ------------
         # 遍历 mask 文件并处理
         for i in range(5):
             mask_name = f"{last_folder}_{i}_mask.png"
@@ -181,6 +182,7 @@ class BuildingsDataset(Dataset):
 
         masks__tensor_resized = F.interpolate(masks_tensor, size=(new_H, new_W), mode='bicubic', align_corners=False)
 
+        # ------------ 读取点云 ------------
         # 使用 Open3D 加载点云文件
         point_cloud = o3d.io.read_point_cloud(pointcloud_path)
         points = np.asarray(point_cloud.points)
@@ -190,14 +192,6 @@ class BuildingsDataset(Dataset):
             print(f"Warning: No points found in point cloud at {pointcloud_path}")
             return None, None
 
-        # 检查并提取法向量信息
-        # if point_cloud.has_normals():
-        #     normals = np.asarray(point_cloud.normals)
-        # else:
-        #     print(f"Normals not found in {pointcloud_path}, estimating normals...")
-        #     point_cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
-        #     normals = np.asarray(point_cloud.normals)
-
         # 如果有颜色信息，可以提取颜色数据
         if point_cloud.has_colors():
             colors = np.asarray(point_cloud.colors)
@@ -206,39 +200,17 @@ class BuildingsDataset(Dataset):
 
         # 将 numpy 数组转换为 PyTorch 张量
         points_tensor = torch.tensor(points, dtype=torch.float32)
-        # normals_tensor = torch.tensor(normals, dtype=torch.float32)
-        normals_tensor = torch.zeros_like(points_tensor)
-
-        # 假设 points_tensor 已经定义
-        # x_min, y_min, z_min = normals_tensor.min(dim=0).values.tolist()
-        # x_max, y_max, z_max = normals_tensor.max(dim=0).values.tolist()
-        #
-        # print(f"Tensor X range: {x_min} to {x_max}")
-        # print(f"Tensor Y range: {y_min} to {y_max}")
-        # print(f"Tensor Z range: {z_min} to {z_max}")
 
         if colors is not None:
             colors_tensor = torch.tensor(colors, dtype=torch.float32)
         else:
             colors_tensor = None  # 如果没有颜色信息，可以设为 None
 
-        # # 使用 FPS 进行采样
-        # sampled_points, sampled_indices = farthest_point_sampling(points, 4096)
-        #
-        # # 如果有颜色信息，同步采样颜色
-        # if colors is not None:
-        #     sampled_colors = colors[sampled_indices]
-        # else:
-        #     sampled_colors = None  # 没有颜色信息时保持 None
-        #
-        # # 将 numpy 数组转换为 PyTorch 张量
-        # points_tensor = torch.tensor(sampled_points, dtype=torch.float32)
-        #
-        # if sampled_colors is not None:
-        #     colors_tensor = torch.tensor(sampled_colors, dtype=torch.float32)
-        # else:
-        #     colors_tensor = None  # 如果没有颜色信息，可以设为 None
+        # ------------ 读取平面 ------------
+        plane_data = torch.load(pointcloud_plane_path)
+        plane_points = plane_data['points']  # 获取点云坐标
 
+        # ------------ 设置相机参数 ------------
         camera_params = [
             {"name": "_0", "location": [-4.8083e-06, -2.4041e-06,  5.5000e+01], "rotation": [90.0, 0.0, 180.0]},
             {"name": "_1", "location": [-7.8681e-07,  2.9535e+00,  4.5796e+01], "rotation": [90.0, -75.0, 90.0]},
@@ -246,33 +218,32 @@ class BuildingsDataset(Dataset):
             {"name": "_3", "location": [-7.8681e-07,  2.9535e+00,  4.5796e+01], "rotation": [15.0, 0.0, 0.0]},
             {"name": "_4", "location": [-7.8681e-07,  2.9535e+00,  4.5796e+01], "rotation": [165.0, 0.0, 180.0]},
         ]
-
         # 为每个相机参数创建相机对象
         camera_dict = [self.create_camera(cam["location"], cam["rotation"]) for cam in camera_params]
 
-        return points_tensor, normals_tensor, colors_tensor, images_tensor_resized, masks__tensor_resized, camera_dict
+        return points_tensor, colors_tensor, images_tensor_resized, masks__tensor_resized, camera_dict, plane_points
 
 
 def custom_collate_fn(batch):
     # 分离出坐标和颜色
-    points_list, normals_list, colors_list, images_list, masks_list, camera_list = zip(*batch)
+    points_list, colors_list, images_list, masks_list, camera_list, plane_list = zip(*batch)
     # points_list, colors_list = zip(*batch)
 
     # 检查是否所有点云都有颜色
     if all(c is not None for c in colors_list):
-        pointcloud_batch = Pointclouds(points=list(points_list), normals=list(normals_list), features=list(colors_list))
+        pointcloud_batch = Pointclouds(points=list(points_list), features=list(colors_list))
     else:
-        pointcloud_batch = Pointclouds(points=list(points_list), normals=list(normals_list))
+        pointcloud_batch = Pointclouds(points=list(points_list))
 
     # 将 Pointclouds 封装到字典里
     batch_dict = {
         'pointclouds': pointcloud_batch,
-        'points_list': points_list,  # 也可以返回单独的点和颜色列表
-        'normals_list': normals_list,  # 法向量列表
-        'colors_list': colors_list,
+        # 'points_list': points_list,  # 也可以返回单独的点和颜色列表
+        # 'colors_list': colors_list,
         'images_list': images_list,
         'masks_list': masks_list,
         'camera_list': camera_list[0],
+        'plane_list': plane_list,
     }
 
     return batch_dict
