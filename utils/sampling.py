@@ -88,7 +88,7 @@ def downsample_ply_with_fps(input_ply_path, output_ply_path, num_samples):
 
 if __name__ == "__main__":
     # 输入和输出文件夹路径
-    json_file_path = "/home/code/Buildiffusion/data/Qingdao/filter.json"
+    json_file_path = "/home/datasets/UrbanBIS/Qingdao/filter.json"
 
     print(f"Loading JSON data from {json_file_path}")
     with open(json_file_path, 'r') as f:

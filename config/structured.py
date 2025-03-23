@@ -119,7 +119,7 @@ class PointCloudDatasetConfig(DatasetConfig):
 class BuildingsConfig(PointCloudDatasetConfig):
     type: str = 'buildings'
     root: str = '/home/datasets/UrbanBIS'
-    scene: List[str] = field(default_factory=lambda: ['Qingdao', 'Lihu'])
+    scene: List[str] = field(default_factory=lambda: ['Qingdao', 'Lihu', 'Longhua'])
     mask_images: bool = '${model.use_mask}'
     top_image: bool = '${model.use_top}'
     depth_images: bool = '${model.use_depth}'

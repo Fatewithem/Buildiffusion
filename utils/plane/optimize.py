@@ -65,3 +65,15 @@ merged_tensor = torch.tensor(merged_points, dtype=torch.float32)
 merged_colors_tensor = torch.tensor(merged_colors, dtype=torch.float32)
 torch.save({'points': merged_tensor, 'colors': merged_colors_tensor}, merged_pt_file)
 print(f"✅ 合并后的点云已保存为 PyTorch Tensor: {merged_pt_file}")
+
+# 7. 体素化点云
+voxel_size = 0.5  # 设置体素大小
+voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(merged_pcd, voxel_size=voxel_size)
+
+# 8. 可视化体素化结果
+# o3d.visualization.draw_geometries([voxel_grid])
+
+# 9. 另存为 voxel 体素数据
+voxel_output_file = os.path.join(output_dir, "voxel_output.ply")
+o3d.io.write_voxel_grid(voxel_output_file, voxel_grid)
+print(f"✅ 体素化点云已保存为: {voxel_output_file}")

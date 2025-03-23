@@ -80,6 +80,7 @@ def main(cfg: ProjectConfig):
             cfg=cfg,
             model=model,
             dataloader=dataloader_val,
+            # dataloader=dataloader_train,
             # accelerator=accelerator,
         )
         if cfg.logging.wandb and accelerator.is_main_process:
@@ -114,10 +115,16 @@ def main(cfg: ProjectConfig):
                 images = batch['images_list']
                 planes = batch['plane_list']
                 colors = batch['plane_color_list']
+                plane_infos = batch['plane_info_list']
 
                 # Forward pass
                 with torch.cuda.amp.autocast():  # Enables mixed precision for forward pass
-                    loss = model(pointcloud, masks=masks, camera=camera, images=images, planes=planes, colors=colors)
+                    # loss, total_loss, global_loss, emd_loss, color_loss = \
+                    #     model(pointcloud, masks=masks, camera=camera, images=images, planes=planes, colors=colors, plane_infos=plane_infos)
+
+                    loss, total_loss, global_loss, emd_loss = \
+                        model(pointcloud, masks=masks, camera=camera, images=images, planes=planes, colors=colors,
+                              plane_infos=plane_infos)
 
                     # Check if the loss is NaN
                     if torch.isnan(loss).any() or torch.isinf(loss).any():
@@ -145,6 +152,10 @@ def main(cfg: ProjectConfig):
 
                         # Exit if loss was NaN
                     loss_value = loss.item()
+                    total_loss = total_loss.item()
+                    global_loss = global_loss.item()
+                    # color_loss = color_loss.item()
+
                     if not math.isfinite(loss_value):
                         print("Loss is {}, stopping training".format(loss_value))
                         writer.close()  # 关闭 TensorboardX 日志记录器
@@ -156,6 +167,10 @@ def main(cfg: ProjectConfig):
                         'lr': optimizer.param_groups[0]["lr"],
                         'step': train_state.step,
                         'train_loss': loss_value,
+                        'cd_loss': total_loss,
+                        # 'color_loss': color_loss,
+                        'global_loss': global_loss,
+                        'emd_loss': emd_loss,
                         'grad_norm_clipped': grad_norm_clipped,
                     }
                     metric_logger.update(**log_dict)
@@ -220,7 +235,7 @@ def sample(
     io = IO()
 
     for batch_idx, batch in enumerate(dataloader):
-        if batch_idx >= 5:  # ✅ 处理前 5 个 batch
+        if batch_idx >= 10:  # 只处理 10 到 20 之间的 batch
             break
 
         print(f"Processing batch {batch_idx + 1}...")
@@ -232,8 +247,9 @@ def sample(
         camera = batch['camera_list']
         images = batch['images_list']
         planes = batch['plane_list']
+        colors = batch['plane_color_list']
 
-        result, tensor, plane = model.forward_sample(pointcloud, camera, images, planes)
+        result, tensor, plane = model.forward_sample(pointcloud, camera, images, planes, colors)
 
         sequence_name = f"sample_{batch_idx}"
         sequence_category = 'buildings'
@@ -253,12 +269,14 @@ def sample(
         o3d.io.write_point_cloud(ply_path, pcd)
         print(f"✅ Batch {batch_idx} 点云已保存: {ply_path}")
 
-        # 缩小 plane 10 倍
-        if plane.features_padded() is not None:
-            plane = Pointclouds(points=plane.points_padded())
+        # 创建 Open3D 的 PointCloud
+        pcgt = o3d.geometry.PointCloud()
+        pcgt.points = o3d.utility.Vector3dVector(plane.points_packed().cpu().numpy())
+        pcgt.colors = o3d.utility.Vector3dVector(plane.features_packed().cpu().numpy().astype(np.float32))
 
         save_path_gt = f"/home/code/Buildiffusion/result/sample_gt_{batch_idx}.ply"
-        io.save_pointcloud(data=plane, path=save_path_gt)
+        # io.save_pointcloud(data=plane, path=save_path_gt)
+        o3d.io.write_point_cloud(save_path_gt, pcgt)
 
         save_path_tensor = f"/home/code/Buildiffusion/result/sample_{batch_idx}.pt"
         torch.save(tensor, save_path_tensor)
