@@ -15,7 +15,7 @@ class CustomHydraRunDir(RunDir):
 @dataclass
 class RunConfig:
     name: str = 'debug'
-    mode: str = 'train'  # sample train
+    mode: str = 'sample'  # sample train
     mixed_precision: str = 'fp16'  # no
     cpu: bool = False
     seed: int = 42
@@ -23,8 +23,8 @@ class RunConfig:
     vis_before_training: bool = False
     limit_train_batches: Optional[int] = None
     limit_val_batches: Optional[int] = None
-    max_steps: int = 100_000
-    checkpoint_freq: int = 2000
+    max_steps: int = 300_000
+    checkpoint_freq: int = 5000
     val_freq: int = 5_000
     vis_freq: int = 5_000
     log_step_freq: int = 20
@@ -107,7 +107,7 @@ class DatasetConfig:
 
 @dataclass
 class PointCloudDatasetConfig(DatasetConfig):
-    eval_split: str = 'val'
+    eval_split: str = 'test'
     max_points: int = 150_000
     image_height: int = 1080
     image_width: int = 1920
@@ -132,8 +132,9 @@ class AugmentationConfig:
 
 @dataclass
 class DataloaderConfig:
-    batch_size: int = 1 # 2 for debug  32
-    num_workers: int = 8  # 0 for debug  32
+    batch_size: int = 1  # shapenet: 16/4 / hydrant: 2 / buliding: 6 / teddybear: 8 / toytruck : 3
+    num_workers: int = 12  # shapenet : 4 / co3d: 12 / building: 12
+    # 0 for debug  32
 
 
 @dataclass
@@ -181,7 +182,7 @@ class AdadeltaOptimizerConfig(OptimizerConfig):
     type: str = 'torch'
     name: str = 'Adadelta'
     kwargs: Dict = field(default_factory=lambda: dict(
-        weight_decay=1e-6,
+        weight_decay=5e-4,
     ))
 
 
@@ -189,7 +190,7 @@ class AdadeltaOptimizerConfig(OptimizerConfig):
 class AdamOptimizerConfig(OptimizerConfig):
     type: str = 'torch'
     name: str = 'AdamW'
-    weight_decay: float = 1e-6
+    weight_decay: float = 1e-5
     kwargs: Dict = field(default_factory=lambda: dict(betas=(0.95, 0.999)))
 
 

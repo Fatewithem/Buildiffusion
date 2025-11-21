@@ -4,6 +4,7 @@ import json
 import open3d as o3d
 import numpy as np
 import torch
+from pytorch3d.ops import sample_farthest_points
 
 
 def calculate_bounding_box_center(mesh):
@@ -99,16 +100,24 @@ def farthest_point_sample_from_file(input_file: str, output_file: str, num_point
 
     # Convert to numpy array
     points_np = np.asarray(pcd.points)
+    colors_np = np.asarray(pcd.colors) if pcd.has_colors() else None
 
     # Step 2: Convert the numpy array to a torch tensor
     points = torch.tensor(points_np, dtype=torch.float32)
 
     # Step 3: Perform Farthest Point Sampling (FPS)
     sampled_points = farthest_point_sample(points, num_points)
+    if colors_np is not None:
+        colors = torch.tensor(colors_np, dtype=torch.float32)
+        sampled_colors = farthest_point_sample(colors, num_points)
+    else:
+        sampled_colors = None
 
     # Step 4: Convert the downsampled points back to Open3D PointCloud format
     downsampled_pcd = o3d.geometry.PointCloud()
     downsampled_pcd.points = o3d.utility.Vector3dVector(sampled_points.numpy())
+    if sampled_colors is not None:
+        downsampled_pcd.colors = o3d.utility.Vector3dVector(sampled_colors.numpy())
 
     # Step 5: Save the downsampled point cloud to the output file
     o3d.io.write_point_cloud(output_file, downsampled_pcd)
@@ -117,56 +126,26 @@ def farthest_point_sample_from_file(input_file: str, output_file: str, num_point
 
 def farthest_point_sample(points: torch.Tensor, num_points: int) -> torch.Tensor:
     """
-    Perform Farthest Point Sampling (FPS) on a point cloud to downsample it to `num_points`.
-
-    Args:
-    - points (torch.Tensor): The input point cloud tensor of shape (N, 3).
-    - num_points (int): The number of points to downsample to.
-
-    Returns:
-    - torch.Tensor: The downsampled point cloud tensor of shape (num_points, 3).
+    使用 PyTorch3D 的 sample_farthest_points 方法进行最远点采样。
     """
-    # Get the number of points in the point cloud
-    N = points.size(0)
-
-    # Initialize an array to hold the indices of the farthest points
-    farthest_points_idx = torch.zeros(num_points, dtype=torch.long)
-
-    # Randomly choose the first point
-    farthest_points_idx[0] = torch.randint(0, N, (1,))
-
-    # Initialize a tensor to hold the distances from each point to the closest selected point
-    dist = torch.ones(N) * 1e10  # Initialize with a very large value
-
-    for i in range(1, num_points):
-        # Get the distances from all points to the closest selected point
-        dist_to_closest = torch.cdist(points, points[farthest_points_idx[:i]], p=2).min(dim=1)[0]
-        dist = torch.min(dist, dist_to_closest)
-
-        # Select the farthest point
-        farthest_points_idx[i] = torch.argmax(dist)
-
-    # Select the points corresponding to the farthest indices
-    sampled_points = points[farthest_points_idx]
-
-    return sampled_points
+    points = points.unsqueeze(0)  # [1, N, 3]
+    sampled_points, _ = sample_farthest_points(points, K=num_points)
+    return sampled_points.squeeze(0)  # [num_points, 3]
 
 
 if __name__ == "__main__":
     # # 输入和输出文件夹路径
-    # input_folder = "/home/datasets/UrbanBIS/Qingdao/0005-0019"
-    #
-    # json_file_path = "/home/code/Buildiffusion/data/Longhua/filter.json"
+    # json_file_path = "/home/datasets/UrbanBIS/Lihu/filter.json"
     # with open(json_file_path, 'r') as f:
     #     data = json.load(f)
     #
     # for folder, files in data.items():
     #     for file_name in files.keys():
     #         if file_name.endswith(".obj"):
-    #             obj_file_path = os.path.join("/home/datasets/UrbanBIS/Longhua", folder, file_name)
+    #             obj_file_path = os.path.join("/home/datasets/UrbanBIS/Lihu", folder, file_name)
     #             ply_file_name = os.path.splitext(file_name)[0] + ".ply"
     #
-    #             root = os.path.join("/home/datasets/UrbanBIS/Longhua", folder)
+    #             root = os.path.join("/home/datasets/UrbanBIS/Lihu", folder)
     #             print(f"Root: {root}")
     #             ply_file_path = os.path.join(root, ply_file_name)
     #
@@ -183,10 +162,9 @@ if __name__ == "__main__":
     #                            "/home/datasets/UrbanBIS/Longhua/1.2/building/building7/untitled.ply",
     #                            10.0)
 
-        # 输入和输出文件夹路径
-        input_folder = "/home/datasets/UrbanBIS/Qingdao/0005-0019"
 
-        json_file_path = "/home/code/Buildiffusion/data/Longhua/filter.json"
+        # fps
+        json_file_path = "/home/datasets/UrbanBIS/Longhua/filter.json"
         with open(json_file_path, 'r') as f:
             data = json.load(f)
 
@@ -210,4 +188,4 @@ if __name__ == "__main__":
                     print(ply_file_path)
 
                     # 调用转换函数
-                    farthest_point_sample_from_file(ply_file_path, ply_file_fps_path, 20000)
+                    farthest_point_sample_from_file(ply_file_path, ply_file_fps_path, 10000)

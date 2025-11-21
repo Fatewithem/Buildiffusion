@@ -37,7 +37,7 @@ def process_ply_with_knn_blur(input_ply_path, output_ply_path, k=10, noise_std=0
 
 if __name__ == "__main__":
     # 输入和输出文件夹路径
-    json_file_path = "/home/datasets/UrbanBIS/Longhua/filter.json"
+    json_file_path = "/home/datasets/UrbanBIS/Qingdao/filter.json"
 
     print(f"Loading JSON data from {json_file_path}")
     with open(json_file_path, 'r') as f:
@@ -46,11 +46,11 @@ if __name__ == "__main__":
     for folder, files in data.items():
         for file_name in files.keys():
             if file_name.endswith(".obj"):
-                obj_file_path = os.path.join("/home/datasets/UrbanBIS/Longhua", folder, file_name)
+                obj_file_path = os.path.join("/home/datasets/UrbanBIS/Qingdao", folder, file_name)
                 ply_file_name = os.path.splitext(file_name)[0] + "_fps.ply"
                 ply_file_fps_name = os.path.splitext(file_name)[0] + "_blur.ply"
 
-                root = os.path.join("/home/datasets/UrbanBIS/Longhua", folder)
+                root = os.path.join("/home/datasets/UrbanBIS/Qingdao", folder)
                 print(f"Root: {root}")
                 ply_file_path = os.path.join(root, ply_file_name)
                 ply_file_fps_path = os.path.join(root, ply_file_fps_name)

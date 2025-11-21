@@ -24,5 +24,5 @@ def delete_files_with_prefix(folder_path, prefix="._"):
 
 
 # Example usage
-folder_to_clean = "/home/datasets/UrbanBIS/Longhua"  # Replace with your folder path
+folder_to_clean = "/home/datasets/UrbanBIS/"  # Replace with your folder path
 delete_files_with_prefix(folder_to_clean)

@@ -1,6 +1,7 @@
 import datetime
 import math
 import os
+import importlib
 
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
@@ -12,6 +13,7 @@ from accelerate import Accelerator
 from typing import Any, Iterable, List, Optional
 
 import torch
+import torchvision.utils as vutils
 import wandb
 import hydra
 from torch.utils.tensorboard import SummaryWriter
@@ -36,8 +38,11 @@ def main(cfg: ProjectConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    dataset_module = importlib.import_module("dataset.__init__urban")
+    get_dataset = dataset_module.get_dataset
+
     # 在main函数中初始化 accelerator
-    accelerator = Accelerator(mixed_precision='fp16')  # Enable mixed precision
+    accelerator = Accelerator(mixed_precision='no')  # Enable mixed precision
 
     # Logging setup
     writer = SummaryWriter(log_dir=Path('tensorboard_logs'))
@@ -88,6 +93,7 @@ def main(cfg: ProjectConfig):
         time.sleep(5)
         return
 
+
     # 计算每个 epoch 应该包含多少个 step
     steps_per_epoch = len(dataloader_train)
 
@@ -114,52 +120,50 @@ def main(cfg: ProjectConfig):
                 camera = batch['camera_list']
                 images = batch['images_list']
                 planes = batch['plane_list']
-                colors = batch['plane_color_list']
-                plane_infos = batch['plane_info_list']
 
                 # Forward pass
-                with torch.cuda.amp.autocast():  # Enables mixed precision for forward pass
-                    # loss, total_loss, global_loss, emd_loss, color_loss = \
-                    #     model(pointcloud, masks=masks, camera=camera, images=images, planes=planes, colors=colors, plane_infos=plane_infos)
+                # with torch.cuda.amp.autocast():  # Enables mixed precision for forward pass
 
-                    loss, total_loss, global_loss, emd_loss = \
-                        model(pointcloud, masks=masks, camera=camera, images=images, planes=planes, colors=colors,
-                              plane_infos=plane_infos)
+                loss, cd_loss, emd_loss, normal_loss = \
+                    model(pointcloud, masks=masks, camera=camera, images=images, planes=planes)
 
-                    # Check if the loss is NaN
-                    if torch.isnan(loss).any() or torch.isinf(loss).any():
-                        print(f"NaN or Inf detected in loss: {loss}")
-                        sys.exit(1)
+                # Check if the loss is NaN
+                if torch.isnan(loss).any() or torch.isinf(loss).any():
+                    print(f"NaN or Inf detected in loss: {loss}")
+                    sys.exit(1)
 
-                    accelerator.backward(loss)
+                accelerator.backward(loss)
 
-                    if accelerator.sync_gradients:
-                        # 梯度裁剪
-                        if cfg.optimizer.clip_grad_norm is not None:
-                            accelerator.clip_grad_norm_(model.parameters(), cfg.optimizer.clip_grad_norm)
-                        grad_norm_clipped = training_utils.compute_grad_norm(model.parameters())
+                if accelerator.sync_gradients:
+                    # 梯度裁剪
+                    if cfg.optimizer.clip_grad_norm is not None:
+                        accelerator.clip_grad_norm_(model.parameters(), cfg.optimizer.clip_grad_norm)
+                    grad_norm_clipped = training_utils.compute_grad_norm(model.parameters())
 
-                        optimizer.step()
-                        optimizer.zero_grad()
+                    optimizer.step()
+                    optimizer.zero_grad()
 
-                    if accelerator.sync_gradients and accelerator.is_main_process:
-                        writer.add_scalar('Loss/train', loss.item(), train_state.step)
-                        writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], train_state.step)
+                if accelerator.sync_gradients and accelerator.is_main_process:
+                    writer.add_scalar('Loss/train', loss.item(), train_state.step)
+                    writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], train_state.step)
 
-                    if accelerator.sync_gradients:
-                        scheduler.step()
-                        train_state.step += 1
+                if accelerator.sync_gradients:
+                    scheduler.step()
+                    train_state.step += 1
 
-                        # Exit if loss was NaN
-                    loss_value = loss.item()
-                    total_loss = total_loss.item()
-                    global_loss = global_loss.item()
-                    # color_loss = color_loss.item()
+                    # Exit if loss was NaN
+                loss_value = loss.item()
+                cd_loss = cd_loss.item()
+                # global_loss = global_loss.item()
+                emd_loss = emd_loss.item()
+                # center_loss = center_loss.item()
+                normal_loss = normal_loss.item()
+                # extent_loss = extent_loss.item()
 
-                    if not math.isfinite(loss_value):
-                        print("Loss is {}, stopping training".format(loss_value))
-                        writer.close()  # 关闭 TensorboardX 日志记录器
-                        sys.exit(1)
+                if not math.isfinite(loss_value):
+                    print("Loss is {}, stopping training".format(loss_value))
+                    writer.close()  # 关闭 TensorboardX 日志记录器
+                    sys.exit(1)
 
                 if accelerator.sync_gradients:
                     # Logging
@@ -167,10 +171,12 @@ def main(cfg: ProjectConfig):
                         'lr': optimizer.param_groups[0]["lr"],
                         'step': train_state.step,
                         'train_loss': loss_value,
-                        'cd_loss': total_loss,
-                        # 'color_loss': color_loss,
-                        'global_loss': global_loss,
+                        'cd_loss': cd_loss,
+                        # 'global_loss': global_loss,
                         'emd_loss': emd_loss,
+                        # 'center_loss': center_loss,
+                        'normal_loss': normal_loss,
+                        # 'extent_loss': extent_loss,
                         'grad_norm_clipped': grad_norm_clipped,
                     }
                     metric_logger.update(**log_dict)
@@ -229,13 +235,15 @@ def sample(
     model.eval()
 
     # Output dir
-    output_dir: Path = Path(output_dir)
+    output_dir: Path = Path("/home/code/Buildiffusion/result_plane")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # PyTorch3D IO
     io = IO()
 
     for batch_idx, batch in enumerate(dataloader):
-        if batch_idx >= 10:  # 只处理 10 到 20 之间的 batch
+
+        if batch_idx > 10:
             break
 
         print(f"Processing batch {batch_idx + 1}...")
@@ -247,9 +255,8 @@ def sample(
         camera = batch['camera_list']
         images = batch['images_list']
         planes = batch['plane_list']
-        colors = batch['plane_color_list']
 
-        result, tensor, plane = model.forward_sample(pointcloud, camera, images, planes, colors)
+        result, plane = model.forward_sample(pointcloud, camera, images, planes)
 
         sequence_name = f"sample_{batch_idx}"
         sequence_category = 'buildings'
@@ -265,24 +272,19 @@ def sample(
         # pcd.colors = o3d.utility.Vector3dVector(result.features_packed().cpu().numpy().astype(np.float32))
 
         # 保存为 PLY 格式（不同 batch 存不同文件）
-        ply_path = f"/home/code/Buildiffusion/result/sample_{batch_idx}.ply"
-        o3d.io.write_point_cloud(ply_path, pcd)
+        ply_path = output_dir / f"sample_{batch_idx}.ply"
+        o3d.io.write_point_cloud(str(ply_path), pcd)
         print(f"✅ Batch {batch_idx} 点云已保存: {ply_path}")
 
         # 创建 Open3D 的 PointCloud
         pcgt = o3d.geometry.PointCloud()
         pcgt.points = o3d.utility.Vector3dVector(plane.points_packed().cpu().numpy())
-        pcgt.colors = o3d.utility.Vector3dVector(plane.features_packed().cpu().numpy().astype(np.float32))
+        # pcgt.colors = o3d.utility.Vector3dVector(plane.features_packed().cpu().numpy().astype(np.float32))
 
-        save_path_gt = f"/home/code/Buildiffusion/result/sample_gt_{batch_idx}.ply"
-        # io.save_pointcloud(data=plane, path=save_path_gt)
-        o3d.io.write_point_cloud(save_path_gt, pcgt)
+        save_path_gt = output_dir / f"sample_{batch_idx}_gt.ply"
+        o3d.io.write_point_cloud(str(save_path_gt), pcgt)
 
-        save_path_tensor = f"/home/code/Buildiffusion/result/sample_{batch_idx}.pt"
-        torch.save(tensor, save_path_tensor)
-
-    print('Saved all samples to: ')
-    print(output_dir.absolute())
+        # return result, tensor, plane, image_1_tensor
 
 
 if __name__ == "__main__":

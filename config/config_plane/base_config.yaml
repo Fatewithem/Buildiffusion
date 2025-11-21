@@ -45,11 +45,10 @@ network:
   n_queries: 10
   clip_output: true
   transformer:
-    num_encoder_layers: 4
-    num_decoder_layers: 6
+    num_decoder_layers: 8
     dropout: 0.10
-    d_model: 832
-    nhead: 4
+    d_model: 256
+    nhead: 4 # building & co3d : 4; shapenet : 8
     dim_feedforward: 4096
 
 trainer:

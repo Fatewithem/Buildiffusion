@@ -26,17 +26,6 @@ class PositionwiseFeedForward(nn.Module):
         return src
 
 
-class CrossAttention(nn.Module):
-    def __init__(self, hidden_size, n_head, dropout):
-        super().__init__()
-        self.cross_attn = nn.MultiheadAttention(hidden_size, n_head, dropout=dropout)
-        self.norm = RMSNorm(hidden_size)
-
-    def forward(self, enc_out, trg):
-        trg = trg + self.cross_attn(trg, enc_out, enc_out)[0]
-        return self.norm(trg)
-
-
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-8):
         super().__init__()
@@ -48,64 +37,17 @@ class RMSNorm(nn.Module):
         return self.scale * norm
 
 
-class EncoderLayer(nn.Module):
-    def __init__(self, hidden_size, filter_size, n_head, pre_lnorm, dropout):
-        super(EncoderLayer, self).__init__()
-        # self-attention part
-        self.self_attn = nn.MultiheadAttention(hidden_size, n_head, dropout=dropout)
-        self.self_attn_norm = RMSNorm(hidden_size)
-
-        # feed forward network part
-        self.pff = PositionwiseFeedForward(hidden_size, filter_size, dropout)
-        self.pff_norm = RMSNorm(hidden_size)
-
-        self.pre_lnorm = pre_lnorm
-
-    def forward(self, src):
-        if self.pre_lnorm:
-            pre = self.self_attn_norm(src)
-            src = src + self.self_attn(pre, pre, pre)[0]  # residual connection
-
-            pre = self.pff_norm(src)
-            src = src + self.pff(pre)  # residual connection
-        else:
-            src = self.self_attn_norm(src + self.self_attn(src, src, src)[0])  # residual connection + layerNorm
-            src = self.pff_norm(src + self.pff(src))  # residual connection + layerNorm
-
-        return src
-
-
-class Encoder(nn.Module):
-    def __init__(self, hidden_size, filter_size, n_head, dropout, n_layers, pre_lnorm):
-        super(Encoder, self).__init__()
-        self.hidden_size = hidden_size
-        self.embed_scale = hidden_size ** 0.5
-        self.layers = nn.ModuleList(
-            [EncoderLayer(hidden_size, filter_size, n_head, pre_lnorm, dropout) for _ in range(n_layers)])
-        self.pre_lnorm = pre_lnorm
-        self.last_norm = RMSNorm(hidden_size)
-
-    def forward(self, src):
-        for layer in self.layers:
-            src = layer(src)
-
-        if self.pre_lnorm:
-            src = self.last_norm(src)
-
-        return src
-
-
 class DecoderLayer(nn.Module):
     def __init__(self, hidden_size, filter_size, n_head, pre_lnorm, dropout):
         super(DecoderLayer, self).__init__()
-        self.self_attn = nn.MultiheadAttention(hidden_size, n_head, dropout=dropout)
+        self.self_attn = nn.MultiheadAttention(hidden_size, n_head, dropout=dropout, batch_first=True)
         self.self_attn_norm = RMSNorm(hidden_size)
 
-        self.ed_self_attn = nn.MultiheadAttention(hidden_size, n_head, dropout=dropout)
-        self.ed_self_attn_norm = RMSNorm(hidden_size)
+        self.cross_attn_img = nn.MultiheadAttention(hidden_size, n_head, dropout=dropout, batch_first=True)
+        self.cross_attn_img_norm = RMSNorm(hidden_size)
 
-        self.cross_attn = nn.MultiheadAttention(hidden_size, n_head, dropout=dropout)
-        self.cross_attn_norm = RMSNorm(hidden_size)
+        self.cross_attn_pc = nn.MultiheadAttention(hidden_size, n_head, dropout=dropout, batch_first=True)
+        self.cross_attn_pc_norm = RMSNorm(hidden_size)
 
         # feed forward network part
         self.pff = PositionwiseFeedForward(hidden_size, filter_size, dropout)
@@ -113,23 +55,36 @@ class DecoderLayer(nn.Module):
 
         self.pre_lnorm = pre_lnorm
 
-    def forward(self, enc_out, trg, trg_mask):
+        self.modulation = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size * 2),
+            nn.SiLU(),
+            nn.Linear(hidden_size * 2, hidden_size * 2)
+        )
+
+    def forward(self, trg, img_feat, pc_feat, trg_mask, mod):
         if self.pre_lnorm:
             ris = self.self_attn_norm(trg)
+            gamma, beta = self.modulation(mod).chunk(2, dim=-1)
+            gamma, beta = gamma.unsqueeze(1), beta.unsqueeze(1)
+            trg = trg * (1 + gamma) + beta
             trg = trg + self.self_attn(ris, ris, ris, attn_mask=trg_mask)[0]
 
-            ris = self.ed_self_attn_norm(trg)
-            trg = trg + self.ed_self_attn(ris, enc_out, enc_out)[0]
+            ris = self.cross_attn_img_norm(trg)
+            img_ctx = self.cross_attn_img(ris, img_feat, img_feat)[0]
 
-            ris = self.cross_attn_norm(trg)
-            trg = trg + self.cross_attn(ris, enc_out, enc_out)[0]
+            ris = self.cross_attn_pc_norm(trg)
+            pc_ctx = self.cross_attn_pc(ris, pc_feat, pc_feat)[0]
+
+            trg = trg + img_ctx + pc_ctx
 
             ris = self.pff_norm(trg)
             trg = trg + self.pff(ris)
         else:
             trg = self.self_attn_norm(trg + self.self_attn(trg, trg, trg, attn_mask=trg_mask)[0])
-            trg = self.ed_self_attn_norm(trg + self.ed_self_attn(trg, enc_out, enc_out)[0])
-            trg = self.cross_attn_norm(trg + self.cross_attn(trg, enc_out, enc_out)[0])
+
+            trg = self.cross_attn_img_norm(trg + self.cross_attn_img(trg, img_feat, img_feat)[0])
+            trg = self.cross_attn_pc_norm(trg + self.cross_attn_pc(trg, pc_feat, pc_feat)[0])
+
             trg = self.pff_norm(trg + self.pff(trg))
 
         return trg
@@ -146,9 +101,9 @@ class Decoder(nn.Module):
         self.pre_lnorm = pre_lnorm
         self.last_norm = RMSNorm(hidden_size)
 
-    def forward(self, enc_out, trg, trg_mask=None):
+    def forward(self, trg, img_feat, pc_feat, trg_mask=None, mod=None):
         for layer in self.layers:
-            trg = layer(enc_out, trg, trg_mask)
+            trg = layer(trg, img_feat, pc_feat, trg_mask, mod)
 
         if self.pre_lnorm:
             trg = self.last_norm(trg)
@@ -157,16 +112,12 @@ class Decoder(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, d_model, dim_feedforward, nhead, dropout, num_encoder_layers, num_decoder_layers,
-                 pre_lnorm=True):
+    def __init__(self, d_model, dim_feedforward, nhead, dropout, num_decoder_layers, pre_lnorm=True):
         super(Transformer, self).__init__()
-        self.encoder = Encoder(d_model, dim_feedforward, nhead, dropout, num_encoder_layers, pre_lnorm)
         self.decoder = Decoder(d_model, dim_feedforward, nhead, dropout, num_decoder_layers, pre_lnorm)
 
-    def forward(self, src, trg, trg_mask=None):
-        enc_out = self.encoder(src)
-        dec_out = self.decoder(enc_out, trg, trg_mask)
-
+    def forward(self, trg, pc_feat, img_feat, mod=None, trg_mask=None):
+        dec_out = self.decoder(trg, img_feat, pc_feat, trg_mask, mod)
         return dec_out
 
     def generate_square_subsequent_mask(self, sz: int) -> torch.Tensor:

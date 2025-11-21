@@ -7,6 +7,7 @@ import math
 import torch
 from omegaconf import OmegaConf, DictConfig
 
+from pytorch3d.ops import knn_points, sample_farthest_points
 
 def voxel_grid_to_mesh(vox_grid: np.array) -> open3d.geometry.TriangleMesh:
     """
@@ -131,3 +132,63 @@ def convert_to_tensor(output):
 
     # 直接拼接所有 query 的点云，保持 [B, N_total, 3] 格式
     return torch.cat(all_points, dim=0).unsqueeze(0)  # 添加 batch 维度，变成 [1, N_total, 3]
+
+
+def chamfer_f1_score(pred, gt, threshold=0.01, target_points=8192, mode="fps"):
+    """
+    Compute Chamfer-based F-score between two point clouds.
+    If point count < target_points, use FPS + interpolation instead of simple repeat.
+
+    :param pred: Tensor [B, N, 3] - predicted point cloud
+    :param gt: Tensor [B, M, 3] - ground truth point cloud
+    :param threshold: float - distance threshold for F-score
+    :param target_points: int - desired number of points per cloud
+    :param mode: str - interpolation mode, either "fps" or "repeat"
+    :return: precision, recall, fscore (all float)
+    """
+
+    def fps_interpolate(x, target):
+        B, N, C = x.shape
+        if N >= target:
+            x_fps, _ = sample_farthest_points(x, K=target)
+            return x_fps
+
+        # 插值补点
+        idx1 = torch.randint(0, N, (B, target - N), device=x.device)
+        idx2 = torch.randint(0, N, (B, target - N), device=x.device)
+        rand_alpha = torch.rand(B, target - N, 1, device=x.device)
+
+        # 从 x 中选出 idx1 和 idx2 的点，注意 gather 用法确保维度一致
+        pt1 = torch.gather(x, dim=1, index=idx1.unsqueeze(-1).expand(-1, -1, C))  # [B, target-N, 3]
+        pt2 = torch.gather(x, dim=1, index=idx2.unsqueeze(-1).expand(-1, -1, C))  # [B, target-N, 3]
+
+        x_interp = rand_alpha * pt1 + (1 - rand_alpha) * pt2  # [B, target-N, 3]
+
+        return torch.cat([x, x_interp], dim=1)  # [B, target, 3]
+
+    def repeat_interpolate(x, target):
+        B, N, C = x.shape
+        if N >= target:
+            return x[:, :target, :]
+        repeat_factor = (target + N - 1) // N
+        x_repeat = x.repeat(1, repeat_factor, 1)[:, :target, :]
+        return x_repeat
+
+    if mode == "fps":
+        pred = fps_interpolate(pred, target_points)
+        gt = fps_interpolate(gt, target_points)
+    elif mode == "repeat":
+        pred = repeat_interpolate(pred, target_points)
+        gt = repeat_interpolate(gt, target_points)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    dist1 = knn_points(pred, gt, K=1).dists.squeeze(-1)  # [B, N]
+    dist2 = knn_points(gt, pred, K=1).dists.squeeze(-1)  # [B, M]
+
+    precision = torch.mean((dist1 < threshold ** 2).float(), dim=1)
+    recall = torch.mean((dist2 < threshold ** 2).float(), dim=1)
+    fscore = 2 * precision * recall / (precision + recall + 1e-8)
+    fscore[torch.isnan(fscore)] = 0
+
+    return precision.mean().item(), recall.mean().item(), fscore.mean().item()
